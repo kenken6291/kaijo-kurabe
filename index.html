@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>会場くらべ</title>
+  <meta name="description" content="イベント会場を条件で探して、並べて比べられるWebアプリ">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎟️</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Zen+Old+Mincho:wght@700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #EDF0F4;
+      --surface: #FFFFFF;
+      --ink: #172437;
+      --muted: #5A677A;
+      --line: #CDD5E0;
+      --accent: #E8A317;
+      --accent-ink: #3A2A00;
+      --teal: #1F6F78;
+      --danger: #B3261E;
+      --ok: #1E7A45;
+      --radius-s: 6px;
+      --radius-m: 12px;
+      --sans: 'Zen Kaku Gothic New', 'Hiragino Sans', 'Yu Gothic', 'Meiryo', sans-serif;
+      --title: 'Zen Old Mincho', 'Hiragino Mincho ProN', 'Yu Mincho', serif;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101824;
+        --surface: #182334;
+        --ink: #E6EBF2;
+        --muted: #9AA7B8;
+        --line: #2C3A4F;
+        --accent: #F0B232;
+        --teal: #5FB7C0;
+        --danger: #FF8A80;
+        --ok: #6FD39A;
+        color-scheme: dark;
+      }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.7;
+      color: var(--ink);
+      background: var(--bg);
+      padding-top: env(safe-area-inset-top, 0px);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    body.has-tray { padding-bottom: 96px; }
+    a { color: var(--teal); }
+    img { max-width: 100%; display: block; }
+    button, input, select, textarea { font: inherit; color: inherit; }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .muted { color: var(--muted); }
+    [hidden] { display: none !important; }
+
+    /* ---------- ボタン ---------- */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: .4em;
+      border: 0; border-radius: var(--radius-s);
+      background: var(--ink); color: var(--bg);
+      padding: .7em 1.2em; font-weight: 700; cursor: pointer;
+      min-height: 44px;
+    }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-ghost {
+      display: inline-flex; align-items: center; gap: .35em;
+      border: 1px solid var(--line); border-radius: var(--radius-s);
+      background: transparent; padding: .4em .8em; cursor: pointer; min-height: 36px;
+      font-size: .9rem;
+    }
+    .btn-ghost:hover { border-color: var(--ink); }
+    .btn-ghost svg { width: 18px; height: 18px; fill: currentColor; }
+    .btn-link { border: 0; background: none; color: var(--teal); text-decoration: underline; cursor: pointer; padding: .2em; }
+
+    /* ---------- ヘッダー ---------- */
+    .site-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+      padding: .9rem clamp(1rem, 3vw, 2rem);
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .brand { display: flex; align-items: baseline; gap: .8rem; }
+    .brand h1 {
+      margin: 0; font-family: var(--title); font-size: 1.6rem; letter-spacing: .08em; line-height: 1.2;
+    }
+    .brand p { margin: 0; color: var(--muted); font-size: .85rem; }
+    .head-actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }
+    .user-chip { font-size: .9rem; color: var(--muted); display: none; }
+    body.is-auth .user-chip { display: inline; }
+    .auth-only { display: none !important; }
+    body.is-auth .auth-only { display: inline-flex !important; }
+
+    /* ---------- レイアウト ---------- */
+    .layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: minmax(300px, 380px) 1fr;
+      gap: clamp(1rem, 2.5vw, 2rem);
+      padding: clamp(1rem, 2.5vw, 2rem);
+      max-width: 1400px; width: 100%; margin: 0 auto;
+    }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+    /* ---------- 検索パネル ---------- */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-m);
+      padding: 1.25rem;
+      align-self: start;
+      position: sticky; top: 1rem;
+    }
+    @media (max-width: 900px) { .panel { position: static; } }
+    .panel h2 { margin: 0 0 .25rem; font-size: 1.15rem; }
+    .panel > p { margin: 0 0 1rem; color: var(--muted); font-size: .88rem; }
+
+    .voice-box {
+      border: 1px dashed var(--line); border-radius: var(--radius-m);
+      padding: 1rem; margin-bottom: 1.25rem;
+    }
+    .mic-row { display: flex; gap: .6rem; align-items: center; }
+    .mic {
+      display: inline-flex; align-items: center; gap: .5em;
+      border: 2px solid var(--ink); background: var(--surface);
+      border-radius: 999px; padding: .55em 1.1em .55em .7em; font-weight: 700; cursor: pointer; min-height: 48px;
+    }
+    .mic .dot { width: 22px; height: 22px; border-radius: 50%; background: var(--ink); position: relative; }
+    .mic .dot::after { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: var(--surface); }
+    .mic.is-live { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    .mic.is-live .dot { background: var(--accent-ink); animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { transform: scale(.75); } }
+    @media (prefers-reduced-motion: reduce) { .mic.is-live .dot { animation: none; } }
+    .mic:disabled { opacity: .45; cursor: not-allowed; }
+    #voiceText {
+      width: 100%; margin-top: .75rem; min-height: 88px; resize: vertical;
+      border: 1px solid var(--line); border-radius: var(--radius-s); padding: .6rem; background: var(--bg);
+    }
+    #voiceInterim { min-height: 1.4em; margin: .25rem 0 0; font-size: .85rem; color: var(--teal); }
+    #voiceHint { margin: .5rem 0 0; font-size: .82rem; color: var(--muted); }
+
+    .field { margin-bottom: .9rem; }
+    .field label, .field .label { display: block; font-weight: 700; font-size: .9rem; margin-bottom: .25rem; }
+    .field input, .field select {
+      width: 100%; min-height: 44px; padding: .5rem .7rem;
+      border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface);
+      transition: background-color .6s;
+    }
+    .field input.is-filled, .field select.is-filled { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+    .row-budget { display: grid; grid-template-columns: 1fr 8.5em; gap: .6rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+    .mood-chip {
+      border: 1px solid var(--line); background: transparent; border-radius: 999px;
+      padding: .2em .8em; font-size: .85rem; cursor: pointer; min-height: 32px;
+    }
+    .mood-chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+    .form-actions { display: flex; gap: .6rem; align-items: center; margin-top: 1rem; }
+    .form-actions .btn { flex: 1; }
+
+    /* ---------- 結果 ---------- */
+    .results-bar {
+      display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+    .results-bar p { margin: 0; color: var(--muted); }
+    .results-bar select { min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); padding: 0 .6rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
+
+    .venue {
+      background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m);
+      overflow: hidden; display: flex; flex-direction: column;
+    }
+    .venue-media { position: relative; aspect-ratio: 16 / 10; background: var(--bg); }
+    .venue-media img { width: 100%; height: 100%; object-fit: cover; }
+    .venue-noimg {
+      width: 100%; height: 100%; display: grid; place-items: center;
+      font-family: var(--title); font-size: 3.2rem; color: var(--muted);
+    }
+    .venue-badge {
+      position: absolute; left: .6rem; bottom: .6rem;
+      background: var(--ink); color: var(--bg); font-size: .75rem; padding: .15em .6em; border-radius: 4px;
+    }
+    .venue-body { padding: .9rem 1rem .4rem; flex: 1; }
+    .venue-match { display: flex; align-items: center; gap: .5rem; font-size: .78rem; color: var(--muted); }
+    .match-bar { flex: 1; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+    .match-bar span { display: block; height: 100%; background: var(--accent); }
+    .venue-name { margin: .4rem 0 0; font-size: 1.08rem; line-height: 1.4; }
+    .venue-where { margin: .1rem 0 .6rem; color: var(--muted); font-size: .85rem; }
+    .venue-facts { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; margin: 0; }
+    .venue-facts div { border-left: 3px solid var(--accent); padding-left: .5rem; }
+    .venue-facts dt { font-size: .75rem; color: var(--muted); }
+    .venue-facts dd { margin: 0; font-weight: 700; }
+    .venue-ai { margin: .6rem 0 0; font-size: .85rem; color: var(--teal); }
+    .venue-notes { margin: .5rem 0 0; padding: 0; list-style: none; font-size: .8rem; color: var(--danger); }
+    .venue-notes li::before { content: '! '; font-weight: 700; }
+    .venue-tags { display: flex; flex-wrap: wrap; gap: .3rem; margin: .6rem 0 0; }
+    .venue-tags span { font-size: .75rem; border: 1px solid var(--line); border-radius: 4px; padding: 0 .4em; color: var(--muted); }
+    .venue-actions {
+      display: flex; gap: .4rem; align-items: center; flex-wrap: wrap;
+      padding: .7rem 1rem 1rem;
+    }
+    .tts-btn.is-playing { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    .pick-label {
+      margin-left: auto; display: inline-flex; align-items: center; gap: .35rem;
+      border: 1px solid var(--ink); border-radius: var(--radius-s); padding: .35em .75em; cursor: pointer;
+      font-weight: 700; font-size: .9rem; min-height: 36px;
+    }
+    .pick-label input { width: 18px; height: 18px; accent-color: var(--ink); margin: 0; }
+    .pick-label.is-disabled { opacity: .4; cursor: not-allowed; }
+
+    .empty {
+      border: 1px dashed var(--line); border-radius: var(--radius-m);
+      padding: clamp(1.5rem, 5vw, 3rem); text-align: left; max-width: 640px;
+    }
+    .empty h2 { margin: 0 0 .5rem; font-size: 1.2rem; }
+    .empty p { margin: 0; color: var(--muted); }
+
+    /* ---------- 比較トレイ（チケット型） ---------- */
+    .tray {
+      position: fixed; z-index: 20;
+      left: 50%; transform: translateX(-50%);
+      bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+      width: min(760px, calc(100% - 24px));
+      display: flex; align-items: stretch;
+      background: var(--accent); color: var(--accent-ink);
+      border-radius: 10px;
+      -webkit-mask: radial-gradient(circle 10px at 0 50%, transparent 98%, #000) left / 51% 100% no-repeat,
+                    radial-gradient(circle 10px at 100% 50%, transparent 98%, #000) right / 51% 100% no-repeat;
+              mask: radial-gradient(circle 10px at 0 50%, transparent 98%, #000) left / 51% 100% no-repeat,
+                    radial-gradient(circle 10px at 100% 50%, transparent 98%, #000) right / 51% 100% no-repeat;
+      box-shadow: 0 6px 24px rgba(23, 36, 55, .25);
+    }
+    .tray-main { flex: 1; padding: .7rem 1rem .7rem 1.4rem; min-width: 0; }
+    .tray-head { display: flex; gap: .6rem; align-items: baseline; font-size: .8rem; font-weight: 700; }
+    .tray-head .btn-link { color: var(--accent-ink); font-size: .8rem; }
+    .tray ul { list-style: none; margin: .25rem 0 0; padding: 0; display: flex; gap: .4rem; overflow-x: auto; }
+    .tray li {
+      display: inline-flex; align-items: center; gap: .2rem; white-space: nowrap;
+      background: rgba(255, 255, 255, .55); border-radius: 4px; padding: .05em .2em .05em .5em; font-size: .85rem;
+    }
+    .tray li span { max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
+    .tray li button { border: 0; background: none; cursor: pointer; font-weight: 700; padding: 0 .35em; min-height: 28px; color: var(--accent-ink); }
+    .tray-cta {
+      border-left: 2px dashed rgba(58, 42, 0, .45);
+      display: flex; align-items: center; padding: 0 1.4rem 0 1rem;
+    }
+    .tray-cta .btn { background: #172437; color: #FFFFFF; white-space: nowrap; }
+
+    /* ---------- フッター ---------- */
+    .site-foot {
+      border-top: 1px solid var(--line);
+      padding: 1rem clamp(1rem, 3vw, 2rem) calc(1rem + env(safe-area-inset-bottom, 0px));
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem;
+      font-size: .82rem; color: var(--muted); background: var(--surface);
+    }
+
+    /* ---------- ダイアログ ---------- */
+    dialog {
+      border: 0; border-radius: var(--radius-m); padding: 0;
+      width: min(560px, calc(100% - 24px)); max-height: calc(100dvh - 32px);
+      background: var(--surface); color: var(--ink);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, .35);
+    }
+    dialog::backdrop { background: rgba(16, 24, 36, .55); }
+    dialog.wide { width: min(1100px, calc(100% - 24px)); }
+    .dlg-head {
+      display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+      padding: 1rem 1.25rem; border-bottom: 1px solid var(--line);
+      position: sticky; top: 0; background: var(--surface); z-index: 1;
+    }
+    .dlg-head h2 { margin: 0; font-size: 1.15rem; }
+    .dlg-close { border: 0; background: none; font-size: 1.6rem; line-height: 1; cursor: pointer; padding: .2rem .5rem; min-height: 40px; }
+    .dlg-body { padding: 1.25rem; }
+    .dlg-foot { padding: 0 1.25rem 1.25rem; display: flex; gap: .6rem; justify-content: flex-end; flex-wrap: wrap; }
+
+    .form-msg { min-height: 1.4em; font-size: .88rem; margin: .4rem 0; }
+    .form-msg.is-error { color: var(--danger); }
+    .form-msg.is-info { color: var(--teal); }
+    .form-msg.is-ok { color: var(--ok); }
+    .auth-links { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; font-size: .9rem; }
+    .pw-wrap { position: relative; }
+    .pw-wrap input { padding-right: 3rem; }
+    .pw-toggle {
+      position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+      border: 0; background: none; cursor: pointer; width: 40px; height: 40px; display: grid; place-items: center; color: var(--muted);
+    }
+    .pw-toggle svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    .pw-toggle .slash { display: none; }
+    .pw-toggle.is-on .slash { display: inline; }
+    .agree-list { border: 1px solid var(--line); border-radius: var(--radius-s); padding: .75rem .9rem; margin: .5rem 0; }
+    .agree-list label { display: flex; gap: .55rem; align-items: flex-start; font-size: .9rem; padding: .3rem 0; cursor: pointer; }
+    .agree-list input { width: 20px; height: 20px; margin-top: .2rem; flex: none; accent-color: var(--ink); }
+
+    .terms h3 { font-size: 1rem; margin: 1.2rem 0 .3rem; }
+    .terms h3:first-child { margin-top: 0; }
+    .terms p, .terms li { font-size: .9rem; }
+
+    .steps { margin: 0; padding-left: 1.4rem; }
+    .steps li { margin-bottom: .8rem; }
+    .steps strong { display: block; }
+
+    /* 詳細 */
+    .detail-video video, .video-frame { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: var(--radius-s); }
+    .video-frame iframe { width: 100%; height: 100%; border: 0; border-radius: var(--radius-s); }
+    .gallery { margin-top: 1rem; }
+    #galleryMain { width: 100%; max-height: 420px; object-fit: cover; border-radius: var(--radius-s); background: var(--bg); }
+    .gallery-thumbs { display: flex; gap: .4rem; margin-top: .4rem; overflow-x: auto; }
+    .gallery-thumbs button { border: 2px solid transparent; padding: 0; background: none; cursor: pointer; border-radius: 4px; flex: none; }
+    .gallery-thumbs button:focus-visible, .gallery-thumbs button:hover { border-color: var(--accent); }
+    .gallery-thumbs img { width: 84px; height: 56px; object-fit: cover; border-radius: 3px; }
+    .detail-list { margin: 1rem 0 0; }
+    .detail-list div { display: grid; grid-template-columns: 7.5em 1fr; gap: .8rem; padding: .45rem 0; border-bottom: 1px solid var(--line); }
+    .detail-list dt { color: var(--muted); font-size: .88rem; }
+    .detail-list dd { margin: 0; }
+    .detail-note { font-size: .82rem; color: var(--muted); margin: 1rem 0 0; }
+
+    /* 比較表 */
+    .table-scroll { overflow-x: auto; }
+    .cmp { border-collapse: collapse; min-width: 640px; width: 100%; }
+    .cmp th, .cmp td { border-bottom: 1px solid var(--line); padding: .6rem .7rem; vertical-align: top; text-align: left; font-size: .9rem; }
+    .cmp thead th { font-size: 1rem; position: sticky; top: 0; background: var(--surface); border-bottom: 2px solid var(--ink); }
+    .cmp tbody th { color: var(--muted); font-weight: 500; white-space: nowrap; width: 8.5em; position: sticky; left: 0; background: var(--surface); }
+    .cmp td { min-width: 180px; }
+    .cmp-img { width: 100%; max-width: 220px; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 4px; }
+    .cmp .best { background: var(--accent); color: var(--accent-ink); padding: .05em .4em; border-radius: 3px; font-weight: 700; }
+    .cmp video, .cmp .video-frame { max-width: 260px; }
+
+    /* トースト */
+    #toast { position: fixed; z-index: 100; top: calc(12px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); display: grid; gap: .5rem; width: min(480px, calc(100% - 24px)); }
+    .toast-item { background: var(--ink); color: var(--bg); padding: .7rem 1rem; border-radius: var(--radius-s); font-size: .92rem; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+    .toast-item.is-error { background: var(--danger); color: #fff; }
+  </style>
+</head>
+<body>
+  <header class="site-head">
+    <div class="brand">
+      <h1>会場くらべ</h1>
+      <p>イベント会場を探して、並べて比べる</p>
+    </div>
+    <div class="head-actions">
+      <span class="user-chip"><span id="userName"></span> さん</span>
+      <button type="button" class="btn-ghost" id="helpBtn">使い方</button>
+      <button type="button" class="btn-ghost auth-only" id="changePwBtn">パスワード変更</button>
+      <button type="button" class="btn-ghost auth-only" id="logoutBtn">ログアウト</button>
+      <button type="button" class="btn-ghost" id="settingsBtn" aria-label="接続設定">設定</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- 検索パネル -->
+    <aside class="panel" aria-labelledby="searchTitle">
+      <h2 id="searchTitle">どんな会場を探していますか</h2>
+      <p>話すか書くだけで、AIが条件欄に振り分けます。</p>
+
+      <div class="voice-box">
+        <div class="mic-row">
+          <button type="button" class="mic" id="micBtn" aria-pressed="false">
+            <span class="dot" aria-hidden="true"></span><span id="micLabel">話して入力</span>
+          </button>
+          <button type="button" class="btn-ghost" id="extractBtn">条件に反映</button>
+        </div>
+        <label for="voiceText" class="sr-only">希望条件（自由入力）</label>
+        <textarea id="voiceText" placeholder="ここに話した内容が入ります。直接書いてもOKです。"></textarea>
+        <p id="voiceInterim" aria-live="polite"></p>
+        <p id="voiceHint">例：「来月の第2金曜、夜7時から30人くらい。川崎駅の近くで、ひとり5千円以内。落ち着いた雰囲気で音響があるところ」</p>
+      </div>
+
+      <form id="searchForm" novalidate>
+        <div class="row2">
+          <div class="field">
+            <label for="fPeople">人数</label>
+            <input id="fPeople" type="number" inputmode="numeric" min="1" placeholder="30">
+          </div>
+          <div class="field">
+            <label for="fDate">希望日</label>
+            <input id="fDate" type="date">
+          </div>
+        </div>
+        <div class="field">
+          <label for="fBudget">予算（円）</label>
+          <div class="row-budget">
+            <input id="fBudget" type="number" inputmode="numeric" min="0" step="500" placeholder="5000">
+            <select id="fBudgetType" aria-label="予算の単位">
+              <option value="perPerson">1人あたり</option>
+              <option value="total">総額</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <span class="label">時間帯</span>
+          <div class="row2">
+            <input id="fTimeFrom" type="time" aria-label="開始時刻">
+            <input id="fTimeTo" type="time" aria-label="終了時刻">
+          </div>
+        </div>
+        <div class="field">
+          <label for="fArea">エリア・駅</label>
+          <input id="fArea" type="text" placeholder="川崎、横浜駅 など">
+        </div>
+        <div class="field">
+          <label for="fMood">雰囲気・用途</label>
+          <input id="fMood" type="text" placeholder="カジュアル、音響設備重視 など">
+          <div class="chips" role="group" aria-label="よく使う雰囲気">
+            <button type="button" class="mood-chip" data-word="フォーマル" aria-pressed="false">フォーマル</button>
+            <button type="button" class="mood-chip" data-word="カジュアル" aria-pressed="false">カジュアル</button>
+            <button type="button" class="mood-chip" data-word="音響設備重視" aria-pressed="false">音響設備重視</button>
+            <button type="button" class="mood-chip" data-word="隠れ家風" aria-pressed="false">隠れ家風</button>
+            <button type="button" class="mood-chip" data-word="個室" aria-pressed="false">個室</button>
+            <button type="button" class="mood-chip" data-word="子連れOK" aria-pressed="false">子連れOK</button>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="searchBtn">この条件で探す</button>
+          <button type="button" class="btn-ghost" id="clearForm">クリア</button>
+        </div>
+      </form>
+    </aside>
+
+    <!-- 結果 -->
+    <section id="results" aria-labelledby="resultsTitle" aria-live="polite">
+      <h2 id="resultsTitle" class="sr-only">検索結果</h2>
+      <div class="results-bar" id="resultsBar" hidden>
+        <p id="resultSummary"></p>
+        <label>並べ替え
+          <select id="sortSelect">
+            <option value="score">一致度が高い順</option>
+            <option value="budgetAsc">予算が安い順</option>
+            <option value="capacityDesc">収容人数が多い順</option>
+            <option value="name">名前順</option>
+          </select>
+        </label>
+      </div>
+      <div class="empty" id="emptyState">
+        <h2>条件を入れて「この条件で探す」を押してください</h2>
+        <p>気になる会場の「比較」にチェックを入れると、画面下に集まります。2件以上で比較表を開けます（最大4件）。</p>
+      </div>
+      <div class="grid" id="venueGrid"></div>
+    </section>
+  </main>
+
+  <!-- 比較トレイ -->
+  <div class="tray" id="tray" hidden>
+    <div class="tray-main">
+      <div class="tray-head">
+        <span>比較リスト <span id="trayCount"></span></span>
+        <button type="button" class="btn-link" id="clearPick">すべて外す</button>
+      </div>
+      <ul id="trayItems"></ul>
+    </div>
+    <div class="tray-cta">
+      <button type="button" class="btn" id="compareBtn" disabled>比較する</button>
+    </div>
+  </div>
+
+  <footer class="site-foot">
+    <span>会場くらべ <span id="appVersion">v1.0.0</span></span>
+    <button type="button" class="btn-link" onclick="document.getElementById('termsModal').showModal()">利用規約・免責事項</button>
+  </footer>
+
+  <!-- ===== 認証 ===== -->
+  <dialog id="authModal" aria-labelledby="authTitle">
+    <div class="dlg-head">
+      <h2 id="authTitle">会場くらべ 会員ページ</h2>
+      <button type="button" class="dlg-close" id="authClose" aria-label="閉じる" hidden>×</button>
+    </div>
+    <div class="dlg-body">
+      <!-- ログイン -->
+      <section data-view="login">
+        <form id="loginForm">
+          <div class="field">
+            <label for="loginEmail">メールアドレス</label>
+            <input id="loginEmail" type="email" autocomplete="username" required>
+          </div>
+          <div class="field">
+            <label for="loginPassword">パスワード</label>
+            <div class="pw-wrap">
+              <input id="loginPassword" type="password" autocomplete="current-password" required>
+              <button type="button" class="pw-toggle" data-target="loginPassword" aria-label="パスワードを表示" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg>
+              </button>
+            </div>
+          </div>
+          <p class="form-msg" data-msg></p>
+          <button type="submit" class="btn" id="loginBtn" style="width:100%">ログイン</button>
+        </form>
+        <div class="auth-links">
+          <a href="#" data-go="register">新規会員登録</a>
+          <a href="#" data-go="forgot">パスワードを忘れた</a>
+        </div>
+      </section>
+
+      <!-- 新規登録 -->
+      <section data-view="register" hidden>
+        <form id="registerForm">
+          <div class="field">
+            <label for="regEmail">メールアドレス</label>
+            <input id="regEmail" type="email" autocomplete="email" required>
+          </div>
+          <div class="field">
+            <label for="regName">氏名または組織名</label>
+            <input id="regName" type="text" autocomplete="name" maxlength="60" required>
+          </div>
+          <p class="muted" style="font-size:.85rem;margin:0">登録すると仮パスワードがメールで届きます。初回ログイン時に変更してください。</p>
+          <div class="agree-list">
+            <label><input type="checkbox" class="agree" data-key="terms">利用規約に同意します</label>
+            <label><input type="checkbox" class="agree" data-key="disclaimer">免責事項に同意します</label>
+            <label><input type="checkbox" class="agree" data-key="selfResponsibility">掲載情報の確認と会場選びは自己責任で行います</label>
+            <label><input type="checkbox" class="agree" data-key="selfResolution">会場とのトラブルは当事者間で解決し、運営者は関与しないことに同意します</label>
+          </div>
+          <a href="#" id="openTerms">規約の全文を読む</a>
+          <p class="form-msg" data-msg></p>
+          <button type="submit" class="btn" id="registerBtn" style="width:100%" disabled>同意して登録する</button>
+        </form>
+        <div class="auth-links"><a href="#" data-go="login">ログインに戻る</a></div>
+      </section>
+
+      <!-- パスワード再発行 -->
+      <section data-view="forgot" hidden>
+        <form id="forgotForm">
+          <p style="margin-top:0">登録したメールアドレスに、新しい仮パスワードを送ります。</p>
+          <div class="field">
+            <label for="forgotEmail">メールアドレス</label>
+            <input id="forgotEmail" type="email" autocomplete="email" required>
+          </div>
+          <p class="form-msg" data-msg></p>
+          <button type="submit" class="btn" id="forgotBtn" style="width:100%">仮パスワードを送る</button>
+        </form>
+        <div class="auth-links"><a href="#" data-go="login">ログインに戻る</a></div>
+      </section>
+
+      <!-- パスワード変更 -->
+      <section data-view="change" hidden>
+        <form id="changeForm">
+          <div class="field">
+            <label for="curPassword">現在のパスワード（仮パスワード）</label>
+            <div class="pw-wrap">
+              <input id="curPassword" type="password" autocomplete="current-password" required>
+              <button type="button" class="pw-toggle" data-target="curPassword" aria-label="パスワードを表示" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="newPassword">新しいパスワード（英字と数字を含む8文字以上）</label>
+            <div class="pw-wrap">
+              <input id="newPassword" type="password" autocomplete="new-password" required>
+              <button type="button" class="pw-toggle" data-target="newPassword" aria-label="パスワードを表示" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="newPassword2">新しいパスワード（確認）</label>
+            <div class="pw-wrap">
+              <input id="newPassword2" type="password" autocomplete="new-password" required>
+              <button type="button" class="pw-toggle" data-target="newPassword2" aria-label="パスワードを表示" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg>
+              </button>
+            </div>
+          </div>
+          <p class="form-msg" data-msg></p>
+          <button type="submit" class="btn" id="changeBtn" style="width:100%">パスワードを変更する</button>
+        </form>
+      </section>
+    </div>
+  </dialog>
+
+  <!-- ===== 規約 ===== -->
+  <dialog id="termsModal" aria-labelledby="termsTitle">
+    <div class="dlg-head">
+      <h2 id="termsTitle">利用規約・免責事項</h2>
+      <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
+    </div>
+    <div class="dlg-body terms">
+      <h3>利用規約</h3>
+      <p>本サービスは、イベント主催者が会場情報を検索・比較するための無償の情報提供サービスです。会員は、法令および公序良俗に反する目的で利用してはなりません。運営者は事前の予告なく内容の変更・停止を行うことがあります。</p>
+      <h3>免責事項</h3>
+      <p>掲載情報（料金・収容人数・営業時間・写真・映像・AIによるコメントや読み上げを含む）は参考情報であり、正確性・最新性・完全性を保証しません。本サービスの利用により生じた損害について、運営者は一切の責任を負いません。</p>
+      <h3>自己責任の原則</h3>
+      <p>会場の選定、予約、契約、支払いは、利用者自身の判断と責任で行ってください。必ず会場へ直接、空き状況と条件を確認してください。</p>
+      <h3>当事者間でのトラブル解決</h3>
+      <p>予約・キャンセル・料金・設備・サービス内容などをめぐる会場と利用者の間のトラブルは、当事者間で解決するものとし、運営者は仲介・補償を含め一切関与しません。</p>
+    </div>
+    <div class="dlg-foot"><button type="button" class="btn" data-close>閉じる</button></div>
+  </dialog>
+
+  <!-- ===== 使い方 ===== -->
+  <dialog id="tutorialModal" aria-labelledby="tutorialTitle">
+    <div class="dlg-head">
+      <h2 id="tutorialTitle">会場くらべの使い方</h2>
+      <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
+    </div>
+    <div class="dlg-body">
+      <ol class="steps">
+        <li><strong>条件を話す、または書く</strong>「話して入力」を押して、人数・予算・日時・場所・雰囲気を自由に話します。途中で間が空いても聞き取りは続きます。話し終えたら「止める」を押すと、AIが条件欄に振り分けます。</li>
+        <li><strong>条件を確認して探す</strong>反映された内容を確認・修正し、「この条件で探す」を押します。一致度の高い順に会場が並びます。</li>
+        <li><strong>気になる会場を集める</strong>カードの「比較」にチェックを入れると、画面下の比較リストに入ります（最大4件）。</li>
+        <li><strong>並べて比べる</strong>「比較する」で、予算・収容人数・メニュー・写真・空撮映像を横並びで確認できます。いちばん安い予算と最大の収容人数には色が付きます。</li>
+        <li><strong>音声ガイドを聞く</strong>「音声ガイド」で会場の特徴を読み上げます。移動中の確認にも便利です。</li>
+      </ol>
+      <p class="muted" style="font-size:.85rem">空き状況と最新の料金は、必ず会場へ直接確認してください。</p>
+    </div>
+    <div class="dlg-foot"><button type="button" class="btn" id="tutorialDone">はじめる</button></div>
+  </dialog>
+
+  <!-- ===== 設定 ===== -->
+  <dialog id="settingsModal" aria-labelledby="settingsTitle">
+    <div class="dlg-head">
+      <h2 id="settingsTitle">接続設定</h2>
+      <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
+    </div>
+    <form class="dlg-body" id="settingsForm">
+      <p id="settingsLead" style="margin-top:0"></p>
+      <div class="field">
+        <label for="gasUrlInput">GAS WebアプリURL</label>
+        <input id="gasUrlInput" type="url" placeholder="https://script.google.com/macros/s/…/exec" required>
+      </div>
+      <p class="form-msg" id="settingsMsg"></p>
+      <div class="form-actions">
+        <button type="submit" class="btn">保存して接続を確認</button>
+        <button type="button" class="btn-ghost" id="settingsReset">リセット</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ===== 詳細 ===== -->
+  <dialog id="detailModal" class="wide" aria-labelledby="detailTitle">
+    <div class="dlg-head">
+      <h2 id="detailTitle"></h2>
+      <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
+    </div>
+    <div class="dlg-body" id="detailBody"></div>
+    <div class="dlg-foot">
+      <button type="button" class="btn-ghost" id="detailTts">音声ガイドを再生</button>
+      <button type="button" class="btn" data-close>閉じる</button>
+    </div>
+  </dialog>
+
+  <!-- ===== 比較 ===== -->
+  <dialog id="compareModal" class="wide" aria-labelledby="compareTitle">
+    <div class="dlg-head">
+      <h2 id="compareTitle">会場を比較</h2>
+      <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
+    </div>
+    <div class="dlg-body">
+      <div class="table-scroll"><table class="cmp" id="compareTable"></table></div>
+    </div>
+  </dialog>
+
+  <div id="toast" aria-live="polite"></div>
+
+  <script src="config.js"></script>
+  <script src="auth.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
