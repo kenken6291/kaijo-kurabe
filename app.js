@@ -17,6 +17,8 @@
     selected: new Set(),
     sort: 'score',
     perPerson: null,
+    searched: false,
+    lastResult: null,
     audioCache: new Map(),
     audio: null,
     playingId: null,
@@ -47,6 +49,8 @@
 
   document.addEventListener('auth:logout', () => {
     state.venues = [];
+    state.searched = false;
+    state.lastResult = null;
     state.selected.clear();
     stopAudio();
     renderResults();
@@ -122,7 +126,10 @@
     }));
     $('#fMood').addEventListener('input', syncChips);
 
-    $('#searchForm').addEventListener('submit', e => { e.preventDefault(); runSearch(); });
+    $('#searchForm').addEventListener('submit', e => { e.preventDefault(); runSearch(false); });
+    $('#emptyState').addEventListener('click', e => {
+      if (e.target.closest('#relaxBtn')) runSearch(true);
+    });
     $('#clearForm').addEventListener('click', () => {
       $('#searchForm').reset();
       syncChips();
@@ -170,19 +177,32 @@
     el.classList.add('is-filled');
   }
 
-  async function runSearch() {
+  const REASON_LABEL = { area: 'エリア', capacity: '人数', budget: '予算', closed: '定休日', hours: '営業時間', mood: '雰囲気・用途' };
+
+  function reasonText(reasons) {
+    return Object.keys(REASON_LABEL)
+      .filter(k => reasons && reasons[k])
+      .map(k => `${REASON_LABEL[k]}が合わない ${reasons[k]}件`)
+      .join('、');
+  }
+
+  async function runSearch(relaxed) {
     if (!Auth.user) { Auth.open('login'); return; }
     const btn = $('#searchBtn');
     btn.disabled = true;
     btn.textContent = '探しています…';
     $('#results').setAttribute('aria-busy', 'true');
     try {
-      const r = await Api.call('search', { criteria: readCriteria() });
+      const r = await Api.call('search', { criteria: readCriteria(), relaxed: relaxed === true });
       state.venues = r.venues || [];
       state.perPerson = r.perPerson;
+      state.searched = true;
+      state.lastResult = r;
       state.selected.forEach(id => { if (!state.venues.some(v => v.id === id)) state.selected.delete(id); });
-      $('#resultSummary').textContent =
-        `${r.total}件中 ${state.venues.length}件が候補です` + (r.excluded ? `（人数・定休日で ${r.excluded}件を除外）` : '');
+      $('#resultSummary').textContent = r.relaxed
+        ? `条件をゆるめて表示しています（${state.venues.length}件）。赤字の項目が条件と異なります。`
+        : `登録 ${r.total}件のうち、すべての条件に合う会場は ${state.venues.length}件です` +
+          (r.excluded ? `（除外 ${r.excluded}件）` : '');
       renderResults();
       if (window.matchMedia('(max-width: 900px)').matches) $('#results').scrollIntoView({ behavior: 'smooth' });
     } catch (err) {
@@ -355,6 +375,19 @@
       grid.innerHTML = '';
       empty.hidden = false;
       $('#resultsBar').hidden = true;
+      const r = state.lastResult;
+      if (state.searched && r) {
+        const why = reasonText(r.reasons);
+        empty.innerHTML = `
+          <h2>条件に合う会場が見つかりませんでした</h2>
+          <p>登録されている ${r.total}件を確認しました。${why ? esc(why) + '。' : ''}</p>
+          <p>エリアを広げる、人数や予算を見直すなどして、もう一度探してください。</p>
+          ${!r.relaxed && r.total ? '<p style="margin-top:1rem"><button type="button" class="btn-ghost" id="relaxBtn">条件をゆるめて近い会場を見る</button></p>' : ''}`;
+      } else {
+        empty.innerHTML = `
+          <h2>条件を入れて「この条件で探す」を押してください</h2>
+          <p>気になる会場の「比較」にチェックを入れると、画面下に集まります。2件以上で比較表を開けます（最大4件）。</p>`;
+      }
     } else {
       empty.hidden = true;
       $('#resultsBar').hidden = false;
