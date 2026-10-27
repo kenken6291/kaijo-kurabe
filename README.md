@@ -1,4 +1,4 @@
-# 会場くらべ（kaijo-kurabe） v1.0.0
+# 会場くらべ（kaijo-kurabe） v1.1.0
 
 イベント主催者向けの会場検索・比較Webアプリ。
 GitHub Pages（フロント）＋ Google Apps Script / スプレッドシート / Google Drive（バックエンド）＋ Gemini API（条件抽出・雰囲気マッチ・TTS）。
@@ -45,7 +45,24 @@ kaijo-kurabe/
 
 > **Code.gs を修正したら、必ず「デプロイを管理 → 編集 → バージョン：新しいバージョン」で更新してください。** 保存だけでは公開中のURLに反映されません。
 
-## 2. 会場データ（Venues シート）
+## 2. Googleマップ検索（Places API (New)）
+
+登録会場に加えて、Googleマップ上の飲食店・会場を条件で検索できます。
+
+1. [Google Cloud Console](https://console.cloud.google.com/) でプロジェクトを選び、「APIとサービス → ライブラリ」で **Places API (New)** を有効化（課金アカウントの登録が必要）。
+2. 「認証情報 → 認証情報を作成 → APIキー」。作成したキーの「APIの制限」で **Places API (New)** のみに限定。
+   - キーはGASのサーバー側だけで使うため、HTTPリファラー制限は不要です（ブラウザには渡しません）。
+3. GASのスクリプトプロパティに `GOOGLE_MAPS_API_KEY` を追加。
+4. エディタで関数 `testGoogleMaps` を実行し、ログに新橋周辺の店名が出れば成功。
+5. **料金対策**：Cloud Console の「APIとサービス → Places API (New) → 割り当て」で1日あたりのリクエスト上限を設定してください。同じ検索語は1時間キャッシュし、写真は代表1枚のみ取得（詳細を開いたときに最大6枚を追加取得）しています。
+
+仕様メモ：
+- エリア・駅を最大5語まで個別に検索し、重複を除いて表示（例「新橋、日比谷、有楽町」→3回検索）。
+- Googleの情報で判定するのは、営業日時・予算（価格帯データがある場合）・団体可否。**収容人数は取得できない**ため「要確認」と表示します。
+- 写真の撮影者表記（帰属表示）は自動で表示します。消さないでください。
+- 音声ガイドは、Googleの評価・価格帯・紹介文から読み上げ文を作ります。
+
+## 3. 会場データ（Venues シート）
 
 1行＝1会場。主な列：
 
@@ -64,14 +81,14 @@ kaijo-kurabe/
 
 `features` などの紹介文は音声ガイドの原稿になります。「読み上げてください」等の指示語は書かないでください（入っていても送信前に自動除去します）。
 
-## 3. 写真（Google Drive）
+## 4. 写真（Google Drive）
 
 1. Driveに `kaijo-kurabe_media/V001/` のように会場ごとのフォルダを作り、写真を入れる。
 2. フォルダ（または各ファイル）の共有を **「リンクを知っている全員：閲覧者」** にする。
 3. フォルダIDを `imageFolderId` に、または個別IDを `imageIds` に記入。
    - フォルダ内の一覧は6時間キャッシュされます。すぐ反映したいときは `imageIds` を使ってください。
 
-## 4. ロケーション映像（Google Earth Studio）
+## 5. ロケーション映像（Google Earth Studio）
 
 1. Earth Studio で会場周辺の空撮アニメーションを作成し、「Render」で書き出す（画像連番の場合は動画編集ソフト等で MP4 化。1080p・30秒前後・数十MB以内が目安）。
 2. 置き場所はどちらか：
@@ -79,13 +96,13 @@ kaijo-kurabe/
    - **GitHub Pages**：リポジトリの `media/v001.mp4` に置き、`https://kenken6291.github.io/kaijo-kurabe/media/v001.mp4` を `videoUrl` へ（HTML5 videoで直接再生。軽快）。
 3. Earth Studio の利用条件に従い、映像内の Google 帰属表示（ロゴ・著作権表記）は消さずに使用してください。
 
-## 5. GitHub Pages
+## 6. GitHub Pages
 
 1. リポジトリ `kaijo-kurabe` を作成し、`index.html` `config.js` `auth.js` `app.js` を配置。
 2. Settings → Pages → Branch: `main` / root で公開。
 3. `config.js` の `GAS_URL` にデプロイURLを書くか、空のまま公開して画面右上の「設定」から入力。
 
-## 6. 動作確認
+## 7. 動作確認
 
 1. 公開URLを開く → 新規会員登録（4項目の同意が揃うまで登録ボタンは押せません）。
 2. メールの仮パスワードでログイン → パスワード変更画面に自動で切り替わる。

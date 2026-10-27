@@ -1,9 +1,10 @@
 /**
- * 会場くらべ（kaijo-kurabe） GAS バックエンド  v1.0.1
+ * 会場くらべ（kaijo-kurabe） GAS バックエンド  v1.1.0
  * - doPost: JSON API（Content-Type: text/plain で受信 → CORSプリフライト回避）
  * - 認証: SHA-256 + salt + pepper（ストレッチング）、CacheService セッション
  * - 会場DB: スプレッドシート「Venues」シート
  * - AI: Gemini（条件抽出 / 雰囲気マッチ / TTS）
+ * - Googleマップ: Places API (New) Text Search / Place Photos
  *
  * スクリプトプロパティ（setup() で一部自動作成）
  *   GEMINI_API_KEY   : 必須（手動で設定）
@@ -13,10 +14,11 @@
  *   TTS_VOICE        : 既定 Kore
  *   APP_URL          : 公開URL（メール本文に記載）
  *   TTS_FOLDER_ID    : 自動生成（音声キャッシュ用Driveフォルダ）
+ *   GOOGLE_MAPS_API_KEY : Googleマップ検索用（Places API (New) を有効化したキー）
  */
 
 const APP_NAME = '会場くらべ';
-const APP_VERSION = 'v1.0.1';
+const APP_VERSION = 'v1.1.0';
 const SESSION_TTL = 21600;          // 6時間（CacheService上限）
 const MAX_FAIL = 5;                 // ログイン失敗ロック回数
 const LOCK_MINUTES = 15;
@@ -52,6 +54,7 @@ function doPost(e) {
       extract: () => extract_(req),
       search: () => search_(req),
       tts: () => tts_(req),
+      placePhotos: () => placePhotos_(req),
     };
     if (publicActions[action]) return json_(Object.assign({ ok: true }, publicActions[action]()));
     if (privateActions[action]) {
@@ -254,107 +257,407 @@ function extract_(req) {
 }
 
 /* =========================================================
- * 会場検索
+ * 会場検索（登録会場 ＋ Googleマップ）
+ *   厳密モード（既定）：条件に1つでも合わない会場は除外
+ *   req.relaxed === true：条件外も注意書き付きで返す
+ *   req.source：'both'（既定） / 'db' / 'google'
  * ========================================================= */
-/**
- * 会場検索（v1.0.1：条件に合わない会場は除外する「厳密モード」が既定）
- *   req.relaxed === true のときだけ、条件外の会場も注意書き付きで返す。
- */
 function search_(req) {
   const c = req.criteria || {};
   const relaxed = req.relaxed === true;
+  const source = ['db', 'google'].indexOf(req.source) >= 0 ? req.source : 'both';
   const people = toInt_(c.people);
   let perPerson = toInt_(c.budget);
   if (perPerson && c.budgetType === 'total' && people) perPerson = Math.floor(perPerson / people);
   if (c.budgetType === 'total' && !people) perPerson = null; // 人数不明の総額は比較不能
-  const area = String(c.area || '').trim();
-  const mood = String(c.mood || '').trim();
-  const weekday = c.date ? weekdayJa_(c.date) : '';
-  const timeFrom = String(c.timeFrom || '');
-  const timeTo = String(c.timeTo || '');
 
+  const ctx = {
+    people: people,
+    perPerson: perPerson,
+    area: String(c.area || '').trim(),
+    mood: String(c.mood || '').trim(),
+    date: c.date || '',
+    weekday: c.date ? weekdayJa_(c.date) : '',
+    weekdayIdx: c.date ? weekdayIdx_(c.date) : -1,
+    timeFrom: String(c.timeFrom || ''),
+    timeTo: String(c.timeTo || ''),
+  };
   // エリア語：「新橋駅」「東京周辺」→「新橋」「東京」
-  const areaWords = area.split(/[\s,、・\/／]+/)
+  ctx.areaWords = ctx.area.split(/[\s,、・\/／]+/)
     .map(w => w.replace(/(駅|周辺|付近|近辺|近く|エリア|あたり)$/, ''))
     .filter(w => w.length >= 2);
 
-  const all = readVenues_().filter(v => v.active);
   const reasons = { area: 0, capacity: 0, budget: 0, closed: 0, hours: 0, mood: 0 };
   let excluded = 0;
-  const list = [];
-
-  all.forEach(v => {
-    const notes = [];
-    const fails = [];
-    let score = 50;
-
-    // エリア（住所の都道府県名は照合対象外：「東京」が「東京都渋谷区」に一致しないように）
-    if (areaWords.length) {
-      const hay = [v.area, v.station, stripPrefecture_(v.address)].join(' ');
-      if (areaWords.some(w => hay.indexOf(w) >= 0)) score += 15;
-      else { fails.push('area'); notes.push('希望エリア外（' + (v.area || v.station || '所在地不明') + '）'); }
-    }
-    // 収容人数
-    if (people) {
-      if (v.capacityMax && people > v.capacityMax) { fails.push('capacity'); notes.push('収容人数オーバー（最大' + v.capacityMax + '名）'); }
-      else if (v.capacityMin && people < v.capacityMin) { fails.push('capacity'); notes.push('人数に対して広すぎる（最少' + v.capacityMin + '名）'); }
-      else score += 20;
-    }
-    // 予算
-    if (perPerson && v.budgetMin) {
-      if (perPerson >= v.budgetMin) score += 20;
-      else { fails.push('budget'); notes.push('予算オーバー（最低' + v.budgetMin + '円/人）'); }
-    }
-    // 定休日
-    if (weekday && v.closedDays && v.closedDays.split(/[,、\s]+/).indexOf(weekday) >= 0) {
-      fails.push('closed'); notes.push('希望日（' + weekday + '曜）は定休日');
-    }
-    // 営業時間
-    if (v.openHours && ((timeFrom && !withinHours_(timeFrom, v.openHours)) || (timeTo && !withinHours_(timeTo, v.openHours, true)))) {
-      fails.push('hours'); notes.push('希望時間が営業時間外（' + v.openHours + '）');
-    }
-
+  const entries = [];
+  const judge = (entry, fails) => {
     if (fails.length && !relaxed) {
       excluded++;
       fails.forEach(f => { reasons[f]++; });
       return;
     }
-    score -= fails.length * 20;
-    list.push({ v: v, score: score, notes: notes });
-  });
+    entry.score -= fails.length * 20;
+    entries.push(entry);
+  };
 
-  // 雰囲気（Gemini で採点、失敗時はキーワード一致）
-  if (mood && list.length) {
+  // ---- 登録会場 ----
+  let dbTotal = 0;
+  if (source !== 'google') {
+    const all = readVenues_().filter(v => v.active);
+    dbTotal = all.length;
+    all.forEach(v => {
+      const notes = [];
+      const fails = [];
+      let score = 50;
+      if (ctx.areaWords.length) {
+        const hay = [v.area, v.station, stripPrefecture_(v.address)].join(' ');
+        if (ctx.areaWords.some(w => hay.indexOf(w) >= 0)) score += 15;
+        else { fails.push('area'); notes.push('希望エリア外（' + (v.area || v.station || '所在地不明') + '）'); }
+      }
+      if (people) {
+        if (v.capacityMax && people > v.capacityMax) { fails.push('capacity'); notes.push('収容人数オーバー（最大' + v.capacityMax + '名）'); }
+        else if (v.capacityMin && people < v.capacityMin) { fails.push('capacity'); notes.push('人数に対して広すぎる（最少' + v.capacityMin + '名）'); }
+        else score += 20;
+      }
+      if (perPerson && v.budgetMin) {
+        if (perPerson >= v.budgetMin) score += 20;
+        else { fails.push('budget'); notes.push('予算オーバー（最低' + v.budgetMin + '円/人）'); }
+      }
+      if (ctx.weekday && v.closedDays && v.closedDays.split(/[,、\s]+/).indexOf(ctx.weekday) >= 0) {
+        fails.push('closed'); notes.push('希望日（' + ctx.weekday + '曜）は定休日');
+      }
+      if (v.openHours && ((ctx.timeFrom && !withinHours_(ctx.timeFrom, v.openHours)) ||
+          (ctx.timeTo && !withinHours_(ctx.timeTo, v.openHours, true)))) {
+        fails.push('hours'); notes.push('希望時間が営業時間外（' + v.openHours + '）');
+      }
+      judge({
+        kind: 'db', v: v, score: score, notes: notes,
+        moodItem: { id: v.id, name: v.name, atmosphere: v.atmosphere, tags: v.tags, features: v.features },
+      }, fails);
+    });
+  }
+
+  // ---- Googleマップ ----
+  let googleTotal = 0;
+  let googleError = '';
+  if (source !== 'db') {
+    try {
+      const places = googleSearch_(ctx);
+      googleTotal = places.length;
+      places.forEach(p => {
+        const r = judgePlace_(p, ctx);
+        judge({
+          kind: 'google', p: p, score: r.score, notes: r.notes,
+          moodItem: { id: 'g:' + p.id, name: placeName_(p), atmosphere: (p.primaryTypeDisplayName || {}).text || '',
+            tags: '', features: (p.editorialSummary || {}).text || '' },
+        }, r.fails);
+      });
+    } catch (e) {
+      googleError = e.message || String(e);
+    }
+  }
+
+  // ---- 雰囲気（Gemini で採点、失敗時はキーワード一致） ----
+  if (ctx.mood && entries.length) {
     let ai = null;
-    try { ai = moodScores_(mood, list.slice(0, 40).map(x => x.v)); } catch (e) { ai = null; }
-    for (let i = list.length - 1; i >= 0; i--) {
-      const x = list[i];
-      const a = ai && ai[x.v.id];
+    try { ai = moodScores_(ctx.mood, entries.slice(0, 40).map(e => e.moodItem)); } catch (e) { ai = null; }
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      const a = ai && ai[e.moodItem.id];
       if (a) {
-        x.aiComment = a.reason;
+        e.aiComment = a.reason;
         if (a.score <= 3) {
-          if (!relaxed) { list.splice(i, 1); excluded++; reasons.mood++; continue; }
-          x.notes.push('雰囲気・用途が合わない可能性');
+          // 登録会場は情報が十分なので除外。Googleの会場は紹介文が乏しいため減点のみ
+          if (!relaxed && e.kind === 'db') { entries.splice(i, 1); excluded++; reasons.mood++; continue; }
+          e.notes.push('雰囲気・用途が合わない可能性');
         }
-        x.score += (a.score - 5) * 3;
+        e.score += (a.score - 5) * 3;
       } else {
-        const hay = [x.v.atmosphere, x.v.tags, x.v.features].join(' ');
-        if (mood.split(/[\s,、・]+/).some(w => w && hay.indexOf(w) >= 0)) x.score += 10;
+        const hay = [e.moodItem.atmosphere, e.moodItem.tags, e.moodItem.features, e.moodItem.name].join(' ');
+        if (ctx.mood.split(/[\s,、・]+/).some(w => w && hay.indexOf(w) >= 0)) e.score += 10;
       }
     }
   }
 
-  list.sort((a, b) => b.score - a.score);
-  const venues = list.slice(0, 30).map(x => toClientVenue_(x.v, {
-    score: Math.max(0, Math.min(100, Math.round(x.score))),
-    notes: x.notes,
-    aiComment: x.aiComment || '',
-  }));
-  return { venues: venues, total: all.length, excluded: excluded, reasons: reasons, relaxed: relaxed, perPerson: perPerson };
+  entries.sort((a, b) => b.score - a.score);
+  const photoMap = placeThumbs_(entries.slice(0, 30).filter(e => e.kind === 'google').map(e => e.p));
+  const venues = entries.slice(0, 30).map(e => {
+    const extra = {
+      score: Math.max(0, Math.min(100, Math.round(e.score))),
+      notes: e.notes,
+      aiComment: e.aiComment || '',
+    };
+    return e.kind === 'db' ? toClientVenue_(e.v, extra) : Object.assign(placeToClient_(e.p, ctx, photoMap), extra);
+  });
+
+  return {
+    venues: venues, total: dbTotal, googleTotal: googleTotal, googleError: googleError, source: source,
+    excluded: excluded, reasons: reasons, relaxed: relaxed, perPerson: perPerson,
+    mapsSearchUrl: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(mapsQuery_(ctx, ctx.areaWords[0] || ctx.area)),
+  };
 }
 
 function stripPrefecture_(address) {
   return String(address || '').replace(/^(東京都|北海道|京都府|大阪府|.{2,3}県)/, '');
+}
+
+/* =========================================================
+ * Googleマップ（Places API (New)）
+ *   スクリプトプロパティ GOOGLE_MAPS_API_KEY が必要
+ * ========================================================= */
+const PLACES_FIELDS = [
+  'places.id', 'places.displayName', 'places.formattedAddress', 'places.shortFormattedAddress',
+  'places.rating', 'places.userRatingCount', 'places.priceLevel', 'places.priceRange',
+  'places.googleMapsUri', 'places.websiteUri', 'places.nationalPhoneNumber',
+  'places.regularOpeningHours', 'places.photos', 'places.primaryTypeDisplayName',
+  'places.editorialSummary', 'places.goodForGroups', 'places.reservable', 'places.businessStatus',
+].join(',');
+
+function mapsKey_() {
+  const key = prop_('GOOGLE_MAPS_API_KEY');
+  if (!key) throw apiError_('Googleマップ検索のAPIキー（GOOGLE_MAPS_API_KEY）が未設定です。');
+  return key;
+}
+
+function mapsQuery_(ctx, areaWord) {
+  const moods = ctx.mood.split(/[\s,、・]+/).filter(Boolean).slice(0, 3).join(' ');
+  return [areaWord, moods, ctx.people && ctx.people >= 10 ? '宴会' : '', moods ? '' : 'レストラン 会場']
+    .filter(Boolean).join(' ').trim();
+}
+
+/** エリア語ごとに Text Search を並列実行し、重複を除いて返す */
+function googleSearch_(ctx) {
+  if (!ctx.areaWords.length) throw apiError_('Googleマップ検索にはエリア・駅を入力してください。');
+  const key = mapsKey_();
+  const cache = CacheService.getScriptCache();
+  const words = ctx.areaWords.slice(0, 5);
+  const perQuery = words.length > 2 ? 8 : 15;
+  const queries = words.map(w => mapsQuery_(ctx, w));
+  const results = new Array(queries.length);
+  const todo = [];
+
+  queries.forEach((q, i) => {
+    const hit = cache.get('gq_' + md5_(q + '|' + perQuery));
+    if (hit) results[i] = JSON.parse(hit);
+    else todo.push(i);
+  });
+
+  if (todo.length) {
+    const responses = UrlFetchApp.fetchAll(todo.map(i => ({
+      url: 'https://places.googleapis.com/v1/places:searchText',
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': PLACES_FIELDS },
+      payload: JSON.stringify({ textQuery: queries[i], languageCode: 'ja', regionCode: 'JP', pageSize: perQuery }),
+      muteHttpExceptions: true,
+    })));
+    responses.forEach((res, k) => {
+      const i = todo[k];
+      let data = {};
+      try { data = JSON.parse(res.getContentText()); } catch (e) { /* noop */ }
+      if (res.getResponseCode() !== 200) {
+        throw apiError_('Googleマップ検索エラー(' + res.getResponseCode() + '): ' + ((data.error && data.error.message) || ''));
+      }
+      results[i] = (data.places || []).map(p => Object.assign(p, { _areaWord: words[i] }));
+      try { cache.put('gq_' + md5_(queries[i] + '|' + perQuery), JSON.stringify(results[i]), 3600); } catch (e) { /* 100KB超はキャッシュしない */ }
+    });
+  }
+
+  const seen = {};
+  const out = [];
+  results.forEach(list => (list || []).forEach(p => {
+    if (seen[p.id] || (p.businessStatus && p.businessStatus !== 'OPERATIONAL')) return;
+    seen[p.id] = true;
+    out.push(p);
+  }));
+  return out;
+}
+
+/** Googleの会場を条件で判定 */
+function judgePlace_(p, ctx) {
+  const notes = [];
+  const fails = [];
+  let score = 50;
+
+  // 評価（最大 +20）
+  if (p.rating) score += Math.round((Number(p.rating) - 3) * 10);
+
+  // 人数（収容人数は取得できないため、団体可否のみ判定）
+  if (ctx.people) {
+    if (ctx.people >= 10 && p.goodForGroups === false) { fails.push('capacity'); notes.push('団体利用に不向き（Googleの情報）'); }
+    else if (p.goodForGroups === true) { score += 10; notes.push('団体利用可。収容人数は要確認'); }
+    else notes.push('収容人数は要確認');
+  }
+
+  // 予算（priceRange があれば判定）
+  const range = priceRangeYen_(p);
+  if (ctx.perPerson) {
+    if (range.min) {
+      if (ctx.perPerson >= range.min) score += 15;
+      else { fails.push('budget'); notes.push('予算オーバー（目安' + range.min + '円〜/人）'); }
+    } else notes.push('予算は要確認');
+  }
+
+  // 営業日時（regularOpeningHours.periods）
+  const periods = (p.regularOpeningHours || {}).periods;
+  if (ctx.weekdayIdx >= 0 && periods && periods.length) {
+    const openThatDay = periods.some(pr => pr.open && pr.open.day === ctx.weekdayIdx) || periods.some(pr => !pr.close);
+    if (!openThatDay) { fails.push('closed'); notes.push('希望日（' + ctx.weekday + '曜）は定休日'); }
+    else if ((ctx.timeFrom && !placeOpenAt_(periods, ctx.weekdayIdx, toMin_(ctx.timeFrom))) ||
+             (ctx.timeTo && !placeOpenAt_(periods, ctx.weekdayIdx, toMin_(ctx.timeTo) - 1))) {
+      fails.push('hours'); notes.push('希望時間が営業時間外');
+    }
+  } else if (ctx.weekdayIdx >= 0) {
+    notes.push('営業時間は要確認');
+  }
+  return { score: score, notes: notes, fails: fails };
+}
+
+function placeOpenAt_(periods, day, minutes) {
+  if (minutes == null) return true;
+  const WEEK = 7 * 1440;
+  const t = day * 1440 + minutes;
+  return periods.some(pr => {
+    if (!pr.open) return false;
+    if (!pr.close) return true; // 24時間営業
+    const o = pr.open.day * 1440 + (pr.open.hour || 0) * 60 + (pr.open.minute || 0);
+    let cl = pr.close.day * 1440 + (pr.close.hour || 0) * 60 + (pr.close.minute || 0);
+    if (cl <= o) cl += WEEK;
+    return (t >= o && t < cl) || (t + WEEK >= o && t + WEEK < cl);
+  });
+}
+
+function priceRangeYen_(p) {
+  const r = p.priceRange || {};
+  const n = x => (x && x.units ? Number(x.units) : 0);
+  return { min: n(r.startPrice), max: n(r.endPrice) };
+}
+
+function priceLevelText_(lv) {
+  return ({
+    PRICE_LEVEL_FREE: '無料', PRICE_LEVEL_INEXPENSIVE: '安い', PRICE_LEVEL_MODERATE: '手頃',
+    PRICE_LEVEL_EXPENSIVE: 'やや高め', PRICE_LEVEL_VERY_EXPENSIVE: '高級',
+  })[lv] || '';
+}
+
+function placeName_(p) { return (p.displayName || {}).text || '名称不明'; }
+
+/** 検索結果の代表写真（1枚目）を並列取得：photoUri はキーを含まない */
+function placeThumbs_(places) {
+  const map = {};
+  const targets = places.filter(p => p.photos && p.photos.length);
+  if (!targets.length) return map;
+  const cache = CacheService.getScriptCache();
+  const need = [];
+  targets.forEach(p => {
+    const hit = cache.get('gp_' + md5_(p.photos[0].name));
+    if (hit) map[p.id] = hit; else need.push(p);
+  });
+  if (need.length) {
+    const key = mapsKey_();
+    const res = UrlFetchApp.fetchAll(need.map(p => ({
+      url: 'https://places.googleapis.com/v1/' + p.photos[0].name + '/media?maxWidthPx=800&skipHttpRedirect=true',
+      headers: { 'X-Goog-Api-Key': key }, muteHttpExceptions: true,
+    })));
+    res.forEach((r, i) => {
+      try {
+        const uri = JSON.parse(r.getContentText()).photoUri;
+        if (uri) { map[need[i].id] = uri; cache.put('gp_' + md5_(need[i].photos[0].name), uri, 3000); }
+      } catch (e) { /* noop */ }
+    });
+  }
+  return map;
+}
+
+function photoAttribution_(photo) {
+  const a = (photo && photo.authorAttributions || [])[0] || {};
+  return { attribution: a.displayName || '', attributionUri: a.uri || '' };
+}
+
+function placeToClient_(p, ctx, photoMap) {
+  const range = priceRangeYen_(p);
+  const hours = (p.regularOpeningHours || {}).weekdayDescriptions || [];
+  // weekdayDescriptions は月曜始まり
+  const dayLine = ctx.weekdayIdx >= 0 ? hours[(ctx.weekdayIdx + 6) % 7] || '' : '';
+  const thumb = photoMap[p.id];
+  return {
+    id: 'g:' + p.id,
+    placeId: p.id,
+    source: 'google',
+    name: placeName_(p),
+    operator: '',
+    address: p.formattedAddress || '',
+    area: p._areaWord || '',
+    station: p.shortFormattedAddress || '',
+    mapUrl: p.googleMapsUri || ('https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(placeName_(p))),
+    budgetMin: range.min, budgetMax: range.max,
+    planText: priceLevelText_(p.priceLevel) ? '価格帯：' + priceLevelText_(p.priceLevel) : '',
+    capacityMin: 0, capacityMax: 0,
+    menu: '',
+    catering: '',
+    atmosphere: (p.primaryTypeDisplayName || {}).text || '',
+    tags: [p.goodForGroups ? '団体可' : '', p.reservable ? '予約可' : ''].filter(Boolean),
+    features: (p.editorialSummary || {}).text || '',
+    openHours: dayLine || hours.join(' / '),
+    closedDays: '',
+    phone: p.nationalPhoneNumber || '',
+    website: p.websiteUri || '',
+    rating: p.rating || 0,
+    ratingCount: p.userRatingCount || 0,
+    photoCount: (p.photos || []).length,
+    images: thumb ? [Object.assign({ thumb: thumb, full: thumb }, photoAttribution_(p.photos[0]))] : [],
+    video: null,
+  };
+}
+
+/** 詳細表示用：写真を最大6枚取得 */
+function placePhotos_(req) {
+  const placeId = String(req.placeId || '').replace(/^g:/, '');
+  if (!/^[\w-]+$/.test(placeId)) throw apiError_('会場IDが正しくありません。');
+  const key = mapsKey_();
+  const res = UrlFetchApp.fetch('https://places.googleapis.com/v1/places/' + placeId, {
+    headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': 'photos' }, muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) throw apiError_('写真を取得できませんでした。');
+  const photos = (JSON.parse(res.getContentText()).photos || []).slice(0, 6);
+  if (!photos.length) return { images: [] };
+  const media = UrlFetchApp.fetchAll(photos.map(ph => ({
+    url: 'https://places.googleapis.com/v1/' + ph.name + '/media?maxWidthPx=1400&skipHttpRedirect=true',
+    headers: { 'X-Goog-Api-Key': key }, muteHttpExceptions: true,
+  })));
+  const images = [];
+  media.forEach((r, i) => {
+    try {
+      const uri = JSON.parse(r.getContentText()).photoUri;
+      if (uri) images.push(Object.assign({ thumb: uri, full: uri }, photoAttribution_(photos[i])));
+    } catch (e) { /* noop */ }
+  });
+  return { images: images };
+}
+
+/** 音声ガイド用：Googleの会場情報から紹介文を作る */
+function placeNarration_(placeId) {
+  const res = UrlFetchApp.fetch('https://places.googleapis.com/v1/places/' + placeId, {
+    headers: {
+      'X-Goog-Api-Key': mapsKey_(),
+      'X-Goog-FieldMask': 'displayName,shortFormattedAddress,formattedAddress,rating,userRatingCount,priceRange,priceLevel,primaryTypeDisplayName,editorialSummary,goodForGroups,reservable',
+    },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) throw apiError_('会場情報を取得できませんでした。');
+  const p = JSON.parse(res.getContentText());
+  const s = [];
+  const type = (p.primaryTypeDisplayName || {}).text;
+  s.push(placeName_(p) + (type ? 'は、' + type + 'です。' : '。'));
+  if (p.shortFormattedAddress || p.formattedAddress) s.push('場所は、' + stripPrefecture_(p.shortFormattedAddress || p.formattedAddress) + 'です。');
+  if (p.rating) s.push('Googleマップでの評価は5点満点中' + p.rating + '点、口コミは' + (p.userRatingCount || 0) + '件です。');
+  const range = priceRangeYen_(p);
+  if (range.min) s.push('価格の目安は、お一人あたり' + range.min + '円' + (range.max ? 'から' + range.max + '円' : '') + 'です。');
+  else if (priceLevelText_(p.priceLevel)) s.push('価格帯は' + priceLevelText_(p.priceLevel) + 'です。');
+  if (p.goodForGroups) s.push('団体での利用に対応しています。');
+  if (p.reservable) s.push('予約ができます。');
+  if (p.editorialSummary && p.editorialSummary.text) s.push(endSentence_(p.editorialSummary.text));
+  return s.join('');
 }
 
 function moodScores_(mood, venues) {
@@ -454,14 +757,20 @@ function driveId_(s) {
  * ========================================================= */
 function tts_(req) {
   const id = String(req.venueId || '');
-  const v = readVenues_().filter(x => x.id === id)[0];
-  if (!v) throw apiError_('会場が見つかりません。');
-  const text = cleanNarration_(buildNarration_(v));
+  let raw;
+  if (/^g:[\w-]+$/.test(id)) {
+    raw = placeNarration_(id.slice(2));
+  } else {
+    const v = readVenues_().filter(x => x.id === id)[0];
+    if (!v) throw apiError_('会場が見つかりません。');
+    raw = buildNarration_(v);
+  }
+  const text = cleanNarration_(raw);
   if (!text) throw apiError_('読み上げる紹介文がありません。');
 
   const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, text + prop_('TTS_VOICE', 'Kore'), Utilities.Charset.UTF_8)
     .map(b => ('0' + (b & 255).toString(16)).slice(-2)).join('').slice(0, 16);
-  const fileName = 'tts_' + id + '_' + digest + '_24000.pcm';
+  const fileName = 'tts_' + id.replace(/[^\w-]/g, '_') + '_' + digest + '_24000.pcm';
   const folder = DriveApp.getFolderById(prop_('TTS_FOLDER_ID'));
   const exist = folder.getFilesByName(fileName);
   if (exist.hasNext()) {
@@ -619,6 +928,30 @@ function withinHours_(hhmm, range, inclusiveEnd) {
   if (end <= start) end += 1440;
   if (t < start) t += 1440;
   return t >= start && (inclusiveEnd ? t <= end : t < end);
+}
+
+function weekdayIdx_(ymd) {
+  const m = String(ymd).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]).getDay() : -1;
+}
+
+function toMin_(hhmm) {
+  const m = String(hhmm || '').match(/(\d{1,2}):(\d{2})/);
+  return m ? (+m[1]) * 60 + (+m[2]) : null;
+}
+
+function md5_(s) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(s), Utilities.Charset.UTF_8)
+    .map(b => ('0' + (b & 255).toString(16)).slice(-2)).join('');
+}
+
+/** エディタから実行して Googleマップ検索の疎通を確認 */
+function testGoogleMaps() {
+  const ctx = { area: '新橋', areaWords: ['新橋'], mood: '個室', people: 8, perPerson: 6000,
+    weekday: '金', weekdayIdx: 5, timeFrom: '19:00', timeTo: '21:00' };
+  const places = googleSearch_(ctx);
+  Logger.log(places.length + '件取得');
+  places.slice(0, 5).forEach(p => Logger.log(placeName_(p) + ' / ' + p.formattedAddress + ' / ★' + (p.rating || '-')));
 }
 
 function apiError_(message, code) { const e = new Error(message); e.code = code || 'ERROR'; return e; }

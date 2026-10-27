@@ -169,7 +169,35 @@
     .form-actions { display: flex; gap: .6rem; align-items: center; margin-top: 1rem; }
     .form-actions .btn { flex: 1; }
 
+    /* 探す場所（セグメント） */
+    .source-set { border: 0; padding: 0; margin: 0 0 .9rem; min-width: 0; }
+    .source-set legend { padding: 0; }
+    .seg { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: var(--radius-s); overflow: hidden; }
+    .seg label { position: relative; cursor: pointer; }
+    .seg label + label { border-left: 1px solid var(--line); }
+    .seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+    .seg span { display: grid; place-items: center; min-height: 40px; font-size: .85rem; padding: 0 .3rem; text-align: center; }
+    .seg input:checked + span { background: var(--ink); color: var(--bg); font-weight: 700; }
+    .seg input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: -3px; }
+    .source-hint { margin: .3rem 0 0; font-size: .78rem; color: var(--muted); }
+
     /* ---------- 結果 ---------- */
+    .maps-notice { margin: 0 0 1rem; font-size: .9rem; }
+    .maps-notice .maps-err { margin: 0 0 .3rem; color: var(--danger); }
+    .src-badge {
+      position: absolute; left: .6rem; top: .6rem;
+      background: var(--surface); color: var(--ink); font-size: .72rem; font-weight: 700;
+      padding: .1em .55em; border-radius: 4px; border: 1px solid var(--line);
+    }
+    .src-badge.is-google { border-color: var(--teal); color: var(--teal); }
+    .photo-credit {
+      position: absolute; right: .4rem; bottom: .4rem; max-width: 60%;
+      background: rgba(0, 0, 0, .55); color: #fff; font-size: .65rem; padding: 0 .4em; border-radius: 3px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .venue-rating { margin: -.4rem 0 .6rem; font-size: .88rem; font-weight: 700; color: var(--ink); }
+    .venue-rating span { font-weight: 400; color: var(--muted); font-size: .8rem; }
+    .gallery-credit { margin: .3rem 0 0; font-size: .75rem; color: var(--muted); min-height: 1em; }
     .results-bar {
       display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
       margin-bottom: 1rem;
@@ -421,6 +449,15 @@
             <button type="button" class="mood-chip" data-word="子連れOK" aria-pressed="false">子連れOK</button>
           </div>
         </div>
+        <fieldset class="field source-set">
+          <legend class="label">探す場所</legend>
+          <div class="seg">
+            <label><input type="radio" name="source" value="both" checked><span>両方</span></label>
+            <label><input type="radio" name="source" value="google"><span>Googleマップ</span></label>
+            <label><input type="radio" name="source" value="db"><span>登録会場</span></label>
+          </div>
+          <p class="source-hint">Googleマップ検索はエリア・駅の入力が必要です。</p>
+        </fieldset>
         <div class="form-actions">
           <button type="submit" class="btn" id="searchBtn">この条件で探す</button>
           <button type="button" class="btn-ghost" id="clearForm">クリア</button>
@@ -442,6 +479,7 @@
           </select>
         </label>
       </div>
+      <div class="maps-notice" id="mapsNotice" hidden></div>
       <div class="empty" id="emptyState">
         <h2>条件を入れて「この条件で探す」を押してください</h2>
         <p>気になる会場の「比較」にチェックを入れると、画面下に集まります。2件以上で比較表を開けます（最大4件）。</p>
@@ -465,7 +503,7 @@
   </div>
 
   <footer class="site-foot">
-    <span>会場くらべ <span id="appVersion">v1.0.0</span></span>
+    <span>会場くらべ <span id="appVersion">v1.1.0</span></span>
     <button type="button" class="btn-link" onclick="document.getElementById('termsModal').showModal()">利用規約・免責事項</button>
   </footer>
 
@@ -605,7 +643,7 @@
     <div class="dlg-body">
       <ol class="steps">
         <li><strong>条件を話す、または書く</strong>「話して入力」を押して、人数・予算・日時・場所・雰囲気を自由に話します。途中で間が空いても聞き取りは続きます。話し終えたら「止める」を押すと、AIが条件欄に振り分けます。</li>
-        <li><strong>条件を確認して探す</strong>反映された内容を確認・修正し、「この条件で探す」を押します。一致度の高い順に会場が並びます。</li>
+        <li><strong>条件を確認して探す</strong>反映された内容を確認・修正し、「探す場所」で登録会場・Googleマップ・両方を選んで「この条件で探す」を押します。一致度の高い順に会場が並びます。Googleマップの会場は収容人数が分からないため、必ず会場へ確認してください。</li>
         <li><strong>気になる会場を集める</strong>カードの「比較」にチェックを入れると、画面下の比較リストに入ります（最大4件）。</li>
         <li><strong>並べて比べる</strong>「比較する」で、予算・収容人数・メニュー・写真・空撮映像を横並びで確認できます。いちばん安い予算と最大の収容人数には色が付きます。</li>
         <li><strong>音声ガイドを聞く</strong>「音声ガイド」で会場の特徴を読み上げます。移動中の確認にも便利です。</li>

@@ -2,7 +2,7 @@
  * 会場くらべ メインロジック
  * - 音声入力（Web Speech API 連続認識・沈黙で止まらない自動再開）
  * - Gemini による条件抽出 → フォーム反映
- * - 検索・並べ替え・カード表示・比較表・詳細（写真/Earth Studio映像）
+ * - 検索（登録会場＋Googleマップ）・並べ替え・カード表示・比較表・詳細（写真/Earth Studio映像）
  * - Gemini TTS 音声ガイド（PCM → WAV 変換して再生）
  */
 (() => {
@@ -20,6 +20,7 @@
     searched: false,
     lastResult: null,
     audioCache: new Map(),
+    photoCache: new Map(),
     audio: null,
     playingId: null,
   };
@@ -51,6 +52,7 @@
     state.venues = [];
     state.searched = false;
     state.lastResult = null;
+    $('#mapsNotice').hidden = true;
     state.selected.clear();
     stopAudio();
     renderResults();
@@ -179,6 +181,16 @@
 
   const REASON_LABEL = { area: 'エリア', capacity: '人数', budget: '予算', closed: '定休日', hours: '営業時間', mood: '雰囲気・用途' };
 
+  function renderMapsNotice(r) {
+    const box = $('#mapsNotice');
+    const link = safeUrl(r.mapsSearchUrl);
+    if (!link && !r.googleError) { box.hidden = true; return; }
+    box.hidden = false;
+    box.innerHTML =
+      (r.googleError ? `<p class="maps-err">Googleマップ検索：${esc(r.googleError)}</p>` : '') +
+      (link ? `<a href="${esc(link)}" target="_blank" rel="noopener">Googleマップでこの条件の周辺を直接見る</a>` : '');
+  }
+
   function reasonText(reasons) {
     return Object.keys(REASON_LABEL)
       .filter(k => reasons && reasons[k])
@@ -193,16 +205,20 @@
     btn.textContent = '探しています…';
     $('#results').setAttribute('aria-busy', 'true');
     try {
-      const r = await Api.call('search', { criteria: readCriteria(), relaxed: relaxed === true });
+      const source = ($('input[name="source"]:checked') || {}).value || 'both';
+      const r = await Api.call('search', { criteria: readCriteria(), relaxed: relaxed === true, source });
       state.venues = r.venues || [];
       state.perPerson = r.perPerson;
       state.searched = true;
       state.lastResult = r;
       state.selected.forEach(id => { if (!state.venues.some(v => v.id === id)) state.selected.delete(id); });
+      const checked = (r.source !== 'google' ? r.total : 0) + (r.googleTotal || 0);
+      const srcText = r.source === 'db' ? '登録会場' : r.source === 'google' ? 'Googleマップ' : '登録会場とGoogleマップ';
       $('#resultSummary').textContent = r.relaxed
         ? `条件をゆるめて表示しています（${state.venues.length}件）。赤字の項目が条件と異なります。`
-        : `登録 ${r.total}件のうち、すべての条件に合う会場は ${state.venues.length}件です` +
+        : `${srcText}の ${checked}件のうち、条件に合う会場は ${state.venues.length}件です` +
           (r.excluded ? `（除外 ${r.excluded}件）` : '');
+      renderMapsNotice(r);
       renderResults();
       if (window.matchMedia('(max-width: 900px)').matches) $('#results').scrollIntoView({ behavior: 'smooth' });
     } catch (err) {
@@ -380,9 +396,9 @@
         const why = reasonText(r.reasons);
         empty.innerHTML = `
           <h2>条件に合う会場が見つかりませんでした</h2>
-          <p>登録されている ${r.total}件を確認しました。${why ? esc(why) + '。' : ''}</p>
+          <p>${(r.source !== 'google' ? r.total : 0) + (r.googleTotal || 0)}件を確認しました。${why ? esc(why) + '。' : ''}</p>
           <p>エリアを広げる、人数や予算を見直すなどして、もう一度探してください。</p>
-          ${!r.relaxed && r.total ? '<p style="margin-top:1rem"><button type="button" class="btn-ghost" id="relaxBtn">条件をゆるめて近い会場を見る</button></p>' : ''}`;
+          ${!r.relaxed && ((r.source !== 'google' ? r.total : 0) + (r.googleTotal || 0)) ? '<p style="margin-top:1rem"><button type="button" class="btn-ghost" id="relaxBtn">条件をゆるめて近い会場を見る</button></p>' : ''}`;
       } else {
         empty.innerHTML = `
           <h2>条件を入れて「この条件で探す」を押してください</h2>
@@ -415,7 +431,9 @@
         <div class="venue-media">
           ${img ? `<img src="${esc(img.thumb)}" alt="${esc(v.name)}の写真" loading="lazy" referrerpolicy="no-referrer">`
                 : `<div class="venue-noimg" aria-hidden="true">${esc(v.name.slice(0, 1))}</div>`}
+          <span class="src-badge ${v.source === 'google' ? 'is-google' : ''}">${v.source === 'google' ? 'Googleマップ' : '登録会場'}</span>
           ${v.video ? '<span class="venue-badge">空撮映像あり</span>' : ''}
+          ${img && img.attribution ? `<span class="photo-credit">写真: ${esc(img.attribution)}</span>` : ''}
         </div>
         <div class="venue-body">
           <div class="venue-match" title="条件との一致度">
@@ -424,6 +442,7 @@
           </div>
           <h3 class="venue-name">${esc(v.name)}</h3>
           <p class="venue-where">${esc([v.area, v.station].filter(Boolean).join('／'))}</p>
+          ${v.rating ? `<p class="venue-rating" aria-label="Googleマップの評価 ${v.rating}、口コミ${v.ratingCount}件">★ ${Number(v.rating).toFixed(1)}<span>（口コミ${Number(v.ratingCount).toLocaleString('ja-JP')}件）</span></p>` : ''}
           <dl class="venue-facts">
             <div><dt>予算/人</dt><dd>${esc(budgetText(v))}</dd></div>
             <div><dt>収容</dt><dd>${esc(capacityText(v))}</dd></div>
@@ -484,6 +503,8 @@
       ['写真', v => v.images && v.images[0]
         ? `<img class="cmp-img" src="${esc(v.images[0].thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<span class="muted">なし</span>'],
       ['一致度', v => `<strong>${Number(v.score) || 0}</strong>`],
+      ['情報元', v => (v.source === 'google' ? 'Googleマップ' : '登録会場')],
+      ['Google評価', v => v.rating ? `★ ${Number(v.rating).toFixed(1)}（${Number(v.ratingCount).toLocaleString('ja-JP')}件）` : '<span class="muted">—</span>'],
       ['運営', v => esc(v.operator) || '<span class="muted">—</span>'],
       ['住所・アクセス', v => `${esc(v.address)}<br><span class="muted">${esc(v.station)}</span>`],
       ['予算/人', v => `<span class="${v.budgetMin && v.budgetMin === minBudget ? 'best' : ''}">${esc(budgetText(v))}</span>`],
@@ -496,7 +517,7 @@
       ['AIコメント', v => esc(v.aiComment) || '<span class="muted">—</span>'],
       ['ロケーション映像', v => v.video ? `<button type="button" class="btn-ghost" data-cmp-video="${esc(v.id)}">映像を見る</button>` : '<span class="muted">なし</span>'],
       ['音声ガイド', v => `<button type="button" class="btn-ghost" data-cmp-tts="${esc(v.id)}">再生</button>`],
-      ['地図', v => `<a href="${esc(safeUrl(v.mapUrl))}" target="_blank" rel="noopener">地図を開く</a>`],
+      ['地図', v => `<a href="${esc(safeUrl(v.mapUrl))}" target="_blank" rel="noopener">Googleマップで開く</a>`],
     ];
     $('#compareTable').innerHTML = `
       <thead><tr><th scope="col"><span class="sr-only">項目</span></th>${items.map(v => `<th scope="col">${esc(v.name)}</th>`).join('')}</tr></thead>
@@ -507,22 +528,24 @@
   /* =========================================================
    * 詳細（写真ギャラリー・Earth Studio 映像）
    * ========================================================= */
-  function openDetail(id) {
+  async function openDetail(id) {
     const v = state.venues.find(x => x.id === id);
     if (!v) return;
-    const imgs = v.images || [];
+    const imgs = state.photoCache.get(id) || v.images || [];
     $('#detailTitle').textContent = v.name;
     $('#detailBody').innerHTML = `
       ${v.video ? `<section class="detail-video">${videoHtml(v.video, v.name)}</section>` : ''}
       ${imgs.length ? `
         <section class="gallery">
           <img id="galleryMain" src="${esc(imgs[0].full)}" alt="${esc(v.name)}の写真 1" referrerpolicy="no-referrer">
+          <p class="gallery-credit" id="galleryCredit">${creditHtml(imgs[0])}</p>
           ${imgs.length > 1 ? `<div class="gallery-thumbs">${imgs.map((im, i) =>
-            `<button type="button" data-full="${esc(im.full)}" data-n="${i + 1}" aria-label="写真${i + 1}を表示"><img src="${esc(im.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>`).join('')}</div>` : ''}
+            `<button type="button" data-full="${esc(im.full)}" data-n="${i + 1}" data-credit="${esc(creditHtml(im))}" aria-label="写真${i + 1}を表示"><img src="${esc(im.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>`).join('')}</div>` : ''}
         </section>` : ''}
       <dl class="detail-list">
-        <div><dt>運営</dt><dd>${esc(v.operator) || '—'}</dd></div>
-        <div><dt>住所</dt><dd>${esc(v.address)}　<a href="${esc(safeUrl(v.mapUrl))}" target="_blank" rel="noopener">地図</a></dd></div>
+        <div><dt>情報元</dt><dd>${v.source === 'google' ? 'Googleマップ' : '登録会場'}${v.rating ? `　★ ${Number(v.rating).toFixed(1)}（口コミ${Number(v.ratingCount).toLocaleString('ja-JP')}件）` : ''}</dd></div>
+        ${v.operator ? `<div><dt>運営</dt><dd>${esc(v.operator)}</dd></div>` : ''}
+        <div><dt>住所</dt><dd>${esc(v.address)}　<a href="${esc(safeUrl(v.mapUrl))}" target="_blank" rel="noopener">Googleマップで開く</a></dd></div>
         <div><dt>アクセス</dt><dd>${esc(v.station) || '—'}</dd></div>
         <div><dt>予算/人</dt><dd>${esc(budgetText(v))}</dd></div>
         <div><dt>料金プラン</dt><dd>${esc(v.planText) || '—'}</dd></div>
@@ -535,9 +558,26 @@
         ${v.phone ? `<div><dt>電話</dt><dd><a href="tel:${esc(v.phone.replace(/[^\d+]/g, ''))}">${esc(v.phone)}</a></dd></div>` : ''}
         ${safeUrl(v.website) ? `<div><dt>Webサイト</dt><dd><a href="${esc(v.website)}" target="_blank" rel="noopener">公式サイトを開く</a></dd></div>` : ''}
       </dl>
-      <p class="detail-note">空き状況・最新の料金は会場へ直接ご確認ください。予約・契約は利用者と会場の間で行われます。</p>`;
+      <p class="detail-note">${v.source === 'google' ? 'Googleマップの情報を表示しています。収容人数・貸切可否・' : ''}空き状況・最新の料金は会場へ直接ご確認ください。予約・契約は利用者と会場の間で行われます。</p>`;
     $('#detailTts').dataset.id = v.id;
     $('#detailModal').showModal();
+
+    // Googleの会場は写真を追加取得（初回のみ）
+    if (v.source === 'google' && v.photoCount > 1 && !state.photoCache.has(id)) {
+      try {
+        const r = await Api.call('placePhotos', { placeId: v.placeId });
+        if (r.images && r.images.length) {
+          state.photoCache.set(id, r.images);
+          if ($('#detailModal').open && $('#detailTts').dataset.id === id) openDetail(id);
+        }
+      } catch (err) { /* 代表写真のみ表示 */ }
+    }
+  }
+
+  function creditHtml(im) {
+    if (!im || !im.attribution) return '';
+    const uri = safeUrl(im.attributionUri);
+    return '写真: ' + (uri ? `<a href="${esc(uri)}" target="_blank" rel="noopener">${esc(im.attribution)}</a>` : esc(im.attribution));
   }
 
   function videoHtml(video, name) {
@@ -623,7 +663,13 @@
     // 詳細：ギャラリー切替・音声
     $('#detailBody').addEventListener('click', e => {
       const t = e.target.closest('[data-full]');
-      if (t) { const m = $('#galleryMain'); m.src = t.dataset.full; m.alt = `写真 ${t.dataset.n}`; }
+      if (t) {
+        const m = $('#galleryMain');
+        m.src = t.dataset.full;
+        m.alt = `写真 ${t.dataset.n}`;
+        const cr = $('#galleryCredit');
+        if (cr) cr.innerHTML = t.dataset.credit || '';
+      }
     });
     $('#detailTts').addEventListener('click', e => playGuide(e.currentTarget.dataset.id, null));
     $('#detailModal').addEventListener('close', () => { $('#detailBody').innerHTML = ''; });
