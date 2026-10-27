@@ -1,5 +1,5 @@
 /**
- * 会場さがし（kaijo-kurabe） GAS バックエンド  v1.1.1
+ * 会場さがし（kaijo-kurabe） GAS バックエンド  v1.2.0
  * - doPost: JSON API（Content-Type: text/plain で受信 → CORSプリフライト回避）
  * - 認証: SHA-256 + salt + pepper（ストレッチング）、CacheService セッション
  * - 会場DB: スプレッドシート「Venues」シート
@@ -15,10 +15,11 @@
  *   APP_URL          : 公開URL（メール本文に記載）
  *   TTS_FOLDER_ID    : 自動生成（音声キャッシュ用Driveフォルダ）
  *   GOOGLE_MAPS_API_KEY : Googleマップ検索用（Places API (New) を有効化したキー）
+ *   SAVED_FOLDER_ID  : 自動生成（検索履歴の保存用Driveフォルダ）
  */
 
 const APP_NAME = '会場さがし';
-const APP_VERSION = 'v1.1.1';
+const APP_VERSION = 'v1.2.0';
 const SESSION_TTL = 21600;          // 6時間（CacheService上限）
 const MAX_FAIL = 5;                 // ログイン失敗ロック回数
 const LOCK_MINUTES = 15;
@@ -52,7 +53,11 @@ function doPost(e) {
       logout: () => { CacheService.getScriptCache().remove('s_' + req.token); return {}; },
       changePassword: (u) => changePassword_(u, req),
       extract: () => extract_(req),
-      search: () => search_(req),
+      search: (u) => search_(req, u),
+      listSaved: (u) => listSaved_(u),
+      getSaved: (u) => getSaved_(u, req),
+      updateSaved: (u) => updateSaved_(u, req),
+      deleteSaved: (u) => deleteSaved_(u, req),
       tts: () => tts_(req),
       placePhotos: () => placePhotos_(req),
     };
@@ -262,7 +267,7 @@ function extract_(req) {
  *   req.relaxed === true：条件外も注意書き付きで返す
  *   req.source：'both'（既定） / 'db' / 'google'
  * ========================================================= */
-function search_(req) {
+function search_(req, user) {
   const c = req.criteria || {};
   const relaxed = req.relaxed === true;
   const source = ['db', 'google'].indexOf(req.source) >= 0 ? req.source : 'both';
@@ -390,11 +395,17 @@ function search_(req) {
     return e.kind === 'db' ? toClientVenue_(e.v, extra) : Object.assign(placeToClient_(e.p, ctx, photoMap), extra);
   });
 
-  return {
+  const result = {
     venues: venues, total: dbTotal, googleTotal: googleTotal, googleError: googleError, source: source,
     excluded: excluded, reasons: reasons, relaxed: relaxed, perPerson: perPerson,
     mapsSearchUrl: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(mapsQuery_(ctx, ctx.areaWords[0] || ctx.area)),
   };
+
+  // 検索条件と結果を履歴に自動保存
+  if (user) {
+    try { result.saved = saveSearch_(user, c, result); } catch (e) { result.saveError = '履歴の保存に失敗しました: ' + e.message; }
+  }
+  return result;
 }
 
 function stripPrefecture_(address) {
@@ -749,6 +760,165 @@ function driveId_(s) {
   if (m) return m[1];
   return /^[\w-]{20,}$/.test(s) ? s : '';
 }
+
+/* =========================================================
+ * 検索履歴（検索条件＋結果のスナップショット）
+ *   シート「Saved」：一覧用メタデータ
+ *   Drive「kaijo-kurabe_saved」：結果本体（JSON）
+ *   ★保存（pinned）していない履歴は、1人あたり最新 SAVED_KEEP 件まで残す
+ * ========================================================= */
+const SAVED_HEADERS = ['id', 'email', 'createdAt', 'title', 'criteria', 'source', 'relaxed', 'count', 'pinned', 'picked', 'fileId', 'summary', 'updatedAt'];
+const SAVED_KEEP = 50;
+
+function savedSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('Saved');
+  if (!sh) {
+    sh = ss.insertSheet('Saved');
+    sh.appendRow(SAVED_HEADERS);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function savedFolder_() {
+  const props = PropertiesService.getScriptProperties();
+  let id = props.getProperty('SAVED_FOLDER_ID');
+  if (id) {
+    try { return DriveApp.getFolderById(id); } catch (e) { /* 削除されていたら作り直す */ }
+  }
+  const folder = DriveApp.createFolder('kaijo-kurabe_saved');
+  props.setProperty('SAVED_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function savedTitle_(c, source) {
+  const parts = [];
+  if (c.area) parts.push(String(c.area).split(/[\s,、・]+/).filter(Boolean).slice(0, 3).join('・'));
+  if (c.people) parts.push(c.people + '名');
+  if (c.date) parts.push(String(c.date).slice(5).replace('-', '/'));
+  if (c.mood) parts.push(String(c.mood).split(/[\s,、・]+/).filter(Boolean).slice(0, 2).join('・'));
+  if (!parts.length) parts.push('条件なし');
+  return parts.join('｜') + (source === 'google' ? '（Google）' : source === 'db' ? '（登録会場）' : '');
+}
+
+function savedSummary_(r) {
+  return {
+    total: r.total, googleTotal: r.googleTotal, googleError: r.googleError, source: r.source,
+    excluded: r.excluded, reasons: r.reasons, relaxed: r.relaxed, perPerson: r.perPerson, mapsSearchUrl: r.mapsSearchUrl,
+  };
+}
+
+/** 検索のたびに自動保存 */
+function saveSearch_(user, criteria, result) {
+  const id = 'S' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMddHHmmss') + Math.floor(Math.random() * 900 + 100);
+  const now = new Date();
+  const summary = savedSummary_(result);
+  const file = savedFolder_().createFile(Utilities.newBlob(
+    JSON.stringify({ venues: result.venues, summary: summary }), 'application/json', id + '.json'));
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    savedSheet_().appendRow([id, user.email, now, savedTitle_(criteria, result.source), JSON.stringify(criteria || {}),
+      result.source, result.relaxed === true, result.venues.length, false, '[]', file.getId(), JSON.stringify(summary), now]);
+    trimSaved_(user.email);
+  } finally {
+    lock.releaseLock();
+  }
+  return { id: id, title: savedTitle_(criteria, result.source), createdAt: now.toISOString() };
+}
+
+/** ★なしの古い履歴を削除 */
+function trimSaved_(email) {
+  const sh = savedSheet_();
+  const values = sh.getDataRange().getValues();
+  const rows = [];
+  for (let i = 1; i < values.length; i++) {
+    if (values[i][1] === email && !isTrue_(values[i][8])) rows.push({ row: i + 1, time: new Date(values[i][2]).getTime(), fileId: values[i][10] });
+  }
+  if (rows.length <= SAVED_KEEP) return;
+  rows.sort((a, b) => b.time - a.time);
+  rows.slice(SAVED_KEEP).sort((a, b) => b.row - a.row).forEach(r => {
+    try { DriveApp.getFileById(r.fileId).setTrashed(true); } catch (e) { /* noop */ }
+    sh.deleteRow(r.row);
+  });
+}
+
+function findSaved_(email, id) {
+  const sh = savedSheet_();
+  const values = sh.getDataRange().getValues();
+  for (let i = 1; i < values.length; i++) {
+    if (values[i][0] === id) {
+      if (values[i][1] !== email) throw apiError_('この履歴を表示する権限がありません。');
+      const o = {};
+      SAVED_HEADERS.forEach((h, j) => { o[h] = values[i][j]; });
+      return { row: i + 1, item: o };
+    }
+  }
+  throw apiError_('履歴が見つかりません。削除された可能性があります。');
+}
+
+function savedToClient_(o) {
+  const parse = (s, d) => { try { return JSON.parse(s); } catch (e) { return d; } };
+  return {
+    id: o.id,
+    title: String(o.title || ''),
+    createdAt: new Date(o.createdAt).toISOString(),
+    updatedAt: o.updatedAt ? new Date(o.updatedAt).toISOString() : '',
+    criteria: parse(o.criteria, {}),
+    source: o.source || 'both',
+    relaxed: isTrue_(o.relaxed),
+    count: Number(o.count) || 0,
+    pinned: isTrue_(o.pinned),
+    picked: parse(o.picked, []),
+  };
+}
+
+function listSaved_(user) {
+  const values = savedSheet_().getDataRange().getValues();
+  const items = [];
+  for (let i = 1; i < values.length; i++) {
+    if (values[i][1] !== user.email) continue;
+    const o = {};
+    SAVED_HEADERS.forEach((h, j) => { o[h] = values[i][j]; });
+    items.push(savedToClient_(o));
+  }
+  items.sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+  return { items: items };
+}
+
+function getSaved_(user, req) {
+  const found = findSaved_(user.email, String(req.id || ''));
+  let body = { venues: [], summary: {} };
+  try { body = JSON.parse(DriveApp.getFileById(found.item.fileId).getBlob().getDataAsString('UTF-8')); } catch (e) {
+    throw apiError_('保存された結果データを読み込めませんでした。');
+  }
+  return { item: savedToClient_(found.item), venues: body.venues || [], summary: body.summary || {} };
+}
+
+function updateSaved_(user, req) {
+  const found = findSaved_(user.email, String(req.id || ''));
+  const sh = savedSheet_();
+  const set = (k, v) => sh.getRange(found.row, SAVED_HEADERS.indexOf(k) + 1).setValue(v);
+  if (typeof req.title === 'string') {
+    const t = req.title.trim().slice(0, 60);
+    if (!t) throw apiError_('名前を入力してください。');
+    set('title', t);
+  }
+  if (typeof req.pinned === 'boolean') set('pinned', req.pinned);
+  if (Array.isArray(req.picked)) set('picked', JSON.stringify(req.picked.map(String).slice(0, 10)));
+  set('updatedAt', new Date());
+  return { item: savedToClient_(findSaved_(user.email, found.item.id).item) };
+}
+
+function deleteSaved_(user, req) {
+  const found = findSaved_(user.email, String(req.id || ''));
+  try { DriveApp.getFileById(found.item.fileId).setTrashed(true); } catch (e) { /* noop */ }
+  savedSheet_().deleteRow(found.row);
+  return { deleted: found.item.id };
+}
+
+function isTrue_(v) { return v === true || String(v).toUpperCase() === 'TRUE'; }
 
 /* =========================================================
  * Gemini TTS 音声ガイド

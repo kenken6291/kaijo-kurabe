@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>会場くらべ</title>
+  <title>会場さがし</title>
   <meta name="description" content="イベント会場を条件で探して、並べて比べられるWebアプリ">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎟️</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -168,6 +168,32 @@
     .mood-chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
     .form-actions { display: flex; gap: .6rem; align-items: center; margin-top: 1rem; }
     .form-actions .btn { flex: 1; }
+
+    /* 保存バナー・検索履歴 */
+    .saved-banner {
+      display: flex; justify-content: space-between; align-items: center; gap: .8rem; flex-wrap: wrap;
+      border: 1px solid var(--line); border-left: 4px solid var(--teal); background: var(--surface);
+      border-radius: var(--radius-s); padding: .6rem .9rem; margin-bottom: 1rem; font-size: .9rem;
+    }
+    .saved-banner.is-old { border-left-color: var(--accent); }
+    .saved-banner p { margin: 0; }
+    .banner-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
+    .hist-filter { display: flex; gap: .4rem; }
+    .hist-note { font-size: .82rem; margin: .5rem 0 1rem; }
+    .hist {
+      display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+      border-bottom: 1px solid var(--line); padding: .9rem 0;
+    }
+    .hist.is-current { background: color-mix(in srgb, var(--accent) 12%, transparent); padding-left: .6rem; padding-right: .6rem; border-radius: var(--radius-s); }
+    .hist-main { flex: 1 1 320px; min-width: 0; }
+    .hist h3 { margin: 0; font-size: 1rem; line-height: 1.5; }
+    .hist-star { color: var(--accent); margin-right: .25em; }
+    .hist-meta { margin: .1rem 0 .3rem; font-size: .8rem; color: var(--muted); }
+    .hist-chips { display: flex; flex-wrap: wrap; gap: .3rem; margin: 0; }
+    .hist-chips span { font-size: .78rem; border: 1px solid var(--line); border-radius: 4px; padding: 0 .45em; }
+    .hist-actions { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+    .hist-actions .btn { min-height: 36px; padding: .3em 1em; }
+    .hist-del { color: var(--danger); }
 
     /* 探す場所（セグメント） */
     .source-set { border: 0; padding: 0; margin: 0 0 .9rem; min-width: 0; }
@@ -374,11 +400,12 @@
 <body>
   <header class="site-head">
     <div class="brand">
-      <h1>会場くらべ</h1>
+      <h1>会場さがし</h1>
       <p>イベント会場を探して、並べて比べる</p>
     </div>
     <div class="head-actions">
       <span class="user-chip"><span id="userName"></span> さん</span>
+      <button type="button" class="btn-ghost auth-only" id="historyBtn">検索履歴</button>
       <button type="button" class="btn-ghost" id="helpBtn">使い方</button>
       <button type="button" class="btn-ghost auth-only" id="changePwBtn">パスワード変更</button>
       <button type="button" class="btn-ghost auth-only" id="logoutBtn">ログアウト</button>
@@ -479,6 +506,7 @@
           </select>
         </label>
       </div>
+      <div class="saved-banner" id="savedBanner" hidden></div>
       <div class="maps-notice" id="mapsNotice" hidden></div>
       <div class="empty" id="emptyState">
         <h2>条件を入れて「この条件で探す」を押してください</h2>
@@ -503,14 +531,14 @@
   </div>
 
   <footer class="site-foot">
-    <span>会場くらべ <span id="appVersion">v1.1.0</span></span>
+    <span>会場さがし <span id="appVersion">v1.2.0</span></span>
     <button type="button" class="btn-link" onclick="document.getElementById('termsModal').showModal()">利用規約・免責事項</button>
   </footer>
 
   <!-- ===== 認証 ===== -->
   <dialog id="authModal" aria-labelledby="authTitle">
     <div class="dlg-head">
-      <h2 id="authTitle">会場くらべ 会員ページ</h2>
+      <h2 id="authTitle">会場さがし 会員ページ</h2>
       <button type="button" class="dlg-close" id="authClose" aria-label="閉じる" hidden>×</button>
     </div>
     <div class="dlg-body">
@@ -637,7 +665,7 @@
   <!-- ===== 使い方 ===== -->
   <dialog id="tutorialModal" aria-labelledby="tutorialTitle">
     <div class="dlg-head">
-      <h2 id="tutorialTitle">会場くらべの使い方</h2>
+      <h2 id="tutorialTitle">会場さがしの使い方</h2>
       <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
     </div>
     <div class="dlg-body">
@@ -646,6 +674,7 @@
         <li><strong>条件を確認して探す</strong>反映された内容を確認・修正し、「探す場所」で登録会場・Googleマップ・両方を選んで「この条件で探す」を押します。一致度の高い順に会場が並びます。Googleマップの会場は収容人数が分からないため、必ず会場へ確認してください。</li>
         <li><strong>気になる会場を集める</strong>カードの「比較」にチェックを入れると、画面下の比較リストに入ります（最大4件）。</li>
         <li><strong>並べて比べる</strong>「比較する」で、予算・収容人数・メニュー・写真・空撮映像を横並びで確認できます。いちばん安い予算と最大の収容人数には色が付きます。</li>
+        <li><strong>あとで見返す</strong>検索した条件と結果は自動で「検索履歴」に残ります。開くと条件も結果も比較リストも当時のまま戻ります。残したい検索には★を付けてください。</li>
         <li><strong>音声ガイドを聞く</strong>「音声ガイド」で会場の特徴を読み上げます。移動中の確認にも便利です。</li>
       </ol>
       <p class="muted" style="font-size:.85rem">空き状況と最新の料金は、必ず会場へ直接確認してください。</p>
@@ -671,6 +700,22 @@
         <button type="button" class="btn-ghost" id="settingsReset">リセット</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- ===== 検索履歴 ===== -->
+  <dialog id="historyModal" class="wide" aria-labelledby="historyTitle">
+    <div class="dlg-head">
+      <h2 id="historyTitle">検索履歴</h2>
+      <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
+    </div>
+    <div class="dlg-body">
+      <div class="hist-filter" role="group" aria-label="表示する履歴">
+        <button type="button" class="mood-chip" data-hfilter="all" aria-pressed="true">すべて</button>
+        <button type="button" class="mood-chip" data-hfilter="pinned" aria-pressed="false">★保存のみ</button>
+      </div>
+      <p class="muted hist-note">検索するたびに、条件と結果が自動で残ります。★を付けていない履歴は新しい順に50件まで保存されます。</p>
+      <div id="historyList"></div>
+    </div>
   </dialog>
 
   <!-- ===== 詳細 ===== -->

@@ -5,7 +5,7 @@
  */
 window.APP_CONFIG = {
   APP_NAME: '会場さがし',
-  VERSION: 'v1.1.1',
+  VERSION: 'v1.2.0',
   GAS_URL: 'https://script.google.com/macros/s/AKfycbzZwBHsLsDFW39fCvXl4qJ63y97Bc85Ial_7pRDu_fZByUEbdoNOrAc6BEs_ECl8Hrs/exec',
   MAX_COMPARE: 4,
   KEYS: {

@@ -4,6 +4,7 @@
  * - Gemini による条件抽出 → フォーム反映
  * - 検索（登録会場＋Googleマップ）・並べ替え・カード表示・比較表・詳細（写真/Earth Studio映像）
  * - Gemini TTS 音声ガイド（PCM → WAV 変換して再生）
+ * - 検索履歴（条件＋結果を自動保存、★保存・名前変更・削除、再表示・再検索）
  */
 (() => {
   const $ = (s, el = document) => el.querySelector(s);
@@ -19,6 +20,11 @@
     perPerson: null,
     searched: false,
     lastResult: null,
+    currentSaved: null,   // 表示中の結果に対応する履歴 { id, title, createdAt, pinned }
+    viewingSaved: false,  // 履歴から開いた結果を表示中か
+    history: [],
+    historyFilter: 'all',
+    pickTimer: null,
     audioCache: new Map(),
     photoCache: new Map(),
     audio: null,
@@ -37,6 +43,8 @@
     bindVoice();
     bindResults();
     bindDialogs();
+    bindHistory();
+    bindImageFallback();
 
     if (!Config.getGasUrl()) openSettings(true);
     Auth.init();
@@ -52,7 +60,11 @@
     state.venues = [];
     state.searched = false;
     state.lastResult = null;
+    state.currentSaved = null;
+    state.viewingSaved = false;
+    state.history = [];
     $('#mapsNotice').hidden = true;
+    renderSavedBanner();
     state.selected.clear();
     stopAudio();
     renderResults();
@@ -181,6 +193,14 @@
 
   const REASON_LABEL = { area: 'エリア', capacity: '人数', budget: '予算', closed: '定休日', hours: '営業時間', mood: '雰囲気・用途' };
 
+  function summaryText(r, count) {
+    const checked = (r.source !== 'google' ? r.total || 0 : 0) + (r.googleTotal || 0);
+    const srcText = r.source === 'db' ? '登録会場' : r.source === 'google' ? 'Googleマップ' : '登録会場とGoogleマップ';
+    return r.relaxed
+      ? `条件をゆるめて表示しています（${count}件）。赤字の項目が条件と異なります。`
+      : `${srcText}の ${checked}件のうち、条件に合う会場は ${count}件です` + (r.excluded ? `（除外 ${r.excluded}件）` : '');
+  }
+
   function renderMapsNotice(r) {
     const box = $('#mapsNotice');
     const link = safeUrl(r.mapsSearchUrl);
@@ -211,15 +231,16 @@
       state.perPerson = r.perPerson;
       state.searched = true;
       state.lastResult = r;
+      state.viewingSaved = false;
+      state.currentSaved = r.saved ? Object.assign({ pinned: false }, r.saved) : null;
+      state.history = []; // 次に履歴を開いたとき再取得
       state.selected.forEach(id => { if (!state.venues.some(v => v.id === id)) state.selected.delete(id); });
-      const checked = (r.source !== 'google' ? r.total : 0) + (r.googleTotal || 0);
-      const srcText = r.source === 'db' ? '登録会場' : r.source === 'google' ? 'Googleマップ' : '登録会場とGoogleマップ';
-      $('#resultSummary').textContent = r.relaxed
-        ? `条件をゆるめて表示しています（${state.venues.length}件）。赤字の項目が条件と異なります。`
-        : `${srcText}の ${checked}件のうち、条件に合う会場は ${state.venues.length}件です` +
-          (r.excluded ? `（除外 ${r.excluded}件）` : '');
+      $('#resultSummary').textContent = summaryText(r, state.venues.length);
       renderMapsNotice(r);
+      renderSavedBanner();
       renderResults();
+      if (r.saveError) toast(r.saveError, 'error');
+      if (state.selected.size) schedulePickedSync();
       if (window.matchMedia('(max-width: 900px)').matches) $('#results').scrollIntoView({ behavior: 'smooth' });
     } catch (err) {
       if (err.code !== 'AUTH' && err.code !== 'MUST_CHANGE') toast(err.message, 'error');
@@ -366,10 +387,10 @@
     });
 
     $('#compareBtn').addEventListener('click', openCompare);
-    $('#clearPick').addEventListener('click', () => { state.selected.clear(); renderResults(); });
+    $('#clearPick').addEventListener('click', () => { state.selected.clear(); renderResults(); schedulePickedSync(); });
     $('#tray').addEventListener('click', e => {
       const x = e.target.closest('[data-unpick]');
-      if (x) { state.selected.delete(x.dataset.unpick); renderResults(); }
+      if (x) { state.selected.delete(x.dataset.unpick); renderResults(); schedulePickedSync(); }
     });
   }
 
@@ -477,6 +498,7 @@
       state.selected.delete(id);
     }
     renderResults();
+    schedulePickedSync();
   }
 
   function renderTray() {
@@ -649,6 +671,224 @@
     dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
     w(36, 'data'); dv.setUint32(40, pcm.length, true);
     return new Blob([header, pcm], { type: 'audio/wav' });
+  }
+
+  /* =========================================================
+   * 検索履歴
+   * ========================================================= */
+  const fmtDate = iso => {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+
+  function criteriaChips(c) {
+    const out = [];
+    if (c.people) out.push(`${c.people}名`);
+    if (c.budget) out.push(`${c.budgetType === 'total' ? '総額' : '1人'} ¥${Number(c.budget).toLocaleString('ja-JP')}`);
+    if (c.date) out.push(c.date.replace(/-/g, '/'));
+    if (c.timeFrom || c.timeTo) out.push(`${c.timeFrom || ''}〜${c.timeTo || ''}`);
+    if (c.area) out.push(c.area);
+    if (c.mood) out.push(c.mood);
+    return out;
+  }
+
+  function bindHistory() {
+    $('#historyBtn').addEventListener('click', openHistory);
+    $$('#historyModal [data-hfilter]').forEach(b => b.addEventListener('click', () => {
+      state.historyFilter = b.dataset.hfilter;
+      $$('#historyModal [data-hfilter]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      renderHistory();
+    }));
+    $('#historyList').addEventListener('click', async e => {
+      const btn = e.target.closest('[data-hact]');
+      if (!btn) return;
+      const id = btn.closest('[data-hid]').dataset.hid;
+      const act = btn.dataset.hact;
+      if (act === 'open') openSaved(id);
+      if (act === 'pin') togglePin(id);
+      if (act === 'rename') renameSaved(id);
+      if (act === 'delete') deleteSaved(id);
+    });
+    $('#savedBanner').addEventListener('click', e => {
+      const b = e.target.closest('[data-bact]');
+      if (!b || !state.currentSaved) return;
+      if (b.dataset.bact === 'pin') togglePin(state.currentSaved.id);
+      if (b.dataset.bact === 'rename') renameSaved(state.currentSaved.id);
+      if (b.dataset.bact === 'research') runSearch(state.lastResult && state.lastResult.relaxed);
+      if (b.dataset.bact === 'history') openHistory();
+    });
+  }
+
+  async function openHistory() {
+    if (!Auth.user) { Auth.open('login'); return; }
+    $('#historyModal').showModal();
+    if (state.history.length) { renderHistory(); return; }
+    $('#historyList').innerHTML = '<p class="muted">読み込んでいます…</p>';
+    try {
+      const r = await Api.call('listSaved');
+      state.history = r.items || [];
+      renderHistory();
+    } catch (err) {
+      $('#historyList').innerHTML = `<p class="form-msg is-error">${esc(err.message)}</p>`;
+    }
+  }
+
+  function renderHistory() {
+    const list = state.history.filter(h => state.historyFilter === 'all' || h.pinned);
+    if (!list.length) {
+      $('#historyList').innerHTML = `<p class="muted">${state.historyFilter === 'pinned'
+        ? '★を付けた検索はまだありません。残しておきたい検索に★を付けると、ここにまとまります。'
+        : 'まだ検索履歴がありません。検索すると、条件と結果がここに自動で残ります。'}</p>`;
+      return;
+    }
+    $('#historyList').innerHTML = list.map(h => `
+      <article class="hist ${state.currentSaved && state.currentSaved.id === h.id ? 'is-current' : ''}" data-hid="${esc(h.id)}">
+        <div class="hist-main">
+          <h3>${h.pinned ? '<span class="hist-star" aria-label="★保存済み">★</span>' : ''}${esc(h.title)}</h3>
+          <p class="hist-meta">${esc(fmtDate(h.createdAt))}　${h.count}件${h.picked && h.picked.length ? `　比較リスト ${h.picked.length}件` : ''}${h.relaxed ? '　条件ゆるめ' : ''}</p>
+          <p class="hist-chips">${criteriaChips(h.criteria).map(c => `<span>${esc(c)}</span>`).join('')}</p>
+        </div>
+        <div class="hist-actions">
+          <button type="button" class="btn" data-hact="open">開く</button>
+          <button type="button" class="btn-ghost" data-hact="pin" aria-pressed="${h.pinned}">${h.pinned ? '★を外す' : '★保存'}</button>
+          <button type="button" class="btn-ghost" data-hact="rename">名前変更</button>
+          <button type="button" class="btn-ghost hist-del" data-hact="delete">削除</button>
+        </div>
+      </article>`).join('');
+  }
+
+  function setFormFromCriteria(c, source) {
+    $('#searchForm').reset();
+    const set = (sel, v) => { $(sel).value = v == null ? '' : v; };
+    set('#fPeople', c.people);
+    set('#fBudget', c.budget);
+    $('#fBudgetType').value = c.budgetType === 'total' ? 'total' : 'perPerson';
+    set('#fDate', c.date);
+    set('#fTimeFrom', c.timeFrom);
+    set('#fTimeTo', c.timeTo);
+    set('#fArea', c.area);
+    set('#fMood', c.mood);
+    const radio = $(`input[name="source"][value="${source || 'both'}"]`);
+    if (radio) radio.checked = true;
+    syncChips();
+  }
+
+  async function openSaved(id) {
+    const btn = $(`#historyList [data-hid="${CSS.escape(id)}"] [data-hact="open"]`);
+    if (btn) { btn.disabled = true; btn.textContent = '開いています…'; }
+    try {
+      const r = await Api.call('getSaved', { id });
+      stopAudio();
+      setFormFromCriteria(r.item.criteria || {}, r.item.source);
+      state.venues = r.venues || [];
+      state.lastResult = Object.assign({}, r.summary, { venues: state.venues });
+      state.perPerson = r.summary.perPerson;
+      state.searched = true;
+      state.viewingSaved = true;
+      state.currentSaved = r.item;
+      state.selected = new Set((r.item.picked || []).filter(pid => state.venues.some(v => v.id === pid)));
+      $('#resultSummary').textContent = summaryText(r.summary, state.venues.length);
+      renderMapsNotice(r.summary);
+      renderSavedBanner();
+      renderResults();
+      $('#historyModal').close();
+      $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '開く'; }
+    }
+  }
+
+  async function updateSaved(id, patch) {
+    const r = await Api.call('updateSaved', Object.assign({ id }, patch));
+    const i = state.history.findIndex(h => h.id === id);
+    if (i >= 0) state.history[i] = r.item;
+    if (state.currentSaved && state.currentSaved.id === id) state.currentSaved = Object.assign({}, state.currentSaved, r.item);
+    return r.item;
+  }
+
+  async function togglePin(id) {
+    const cur = state.history.find(h => h.id === id) || (state.currentSaved && state.currentSaved.id === id ? state.currentSaved : null);
+    const next = !(cur && cur.pinned);
+    try {
+      await updateSaved(id, { pinned: next });
+      toast(next ? '★保存しました。履歴の上限を超えても消えません。' : '★を外しました。');
+      renderHistory();
+      renderSavedBanner();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function renameSaved(id) {
+    const cur = state.history.find(h => h.id === id) || state.currentSaved;
+    const title = window.prompt('この検索の名前', cur ? cur.title : '');
+    if (title == null) return;
+    try {
+      await updateSaved(id, { title });
+      toast('名前を変更しました。');
+      renderHistory();
+      renderSavedBanner();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function deleteSaved(id) {
+    const cur = state.history.find(h => h.id === id);
+    if (!window.confirm(`「${cur ? cur.title : 'この検索'}」を履歴から削除しますか？`)) return;
+    try {
+      await Api.call('deleteSaved', { id });
+      state.history = state.history.filter(h => h.id !== id);
+      if (state.currentSaved && state.currentSaved.id === id) { state.currentSaved = null; renderSavedBanner(); }
+      renderHistory();
+      toast('削除しました。');
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  /** 比較リストの選択を履歴に保存（連続操作はまとめて送信） */
+  function schedulePickedSync() {
+    if (!state.currentSaved) return;
+    clearTimeout(state.pickTimer);
+    const id = state.currentSaved.id;
+    state.pickTimer = setTimeout(() => {
+      updateSaved(id, { picked: [...state.selected] }).catch(() => { /* 次回操作時に再送 */ });
+    }, 900);
+  }
+
+  function renderSavedBanner() {
+    const box = $('#savedBanner');
+    const cur = state.currentSaved;
+    if (!cur) { box.hidden = true; return; }
+    box.hidden = false;
+    box.classList.toggle('is-old', state.viewingSaved);
+    box.innerHTML = state.viewingSaved
+      ? `<p><strong>${cur.pinned ? '★ ' : ''}${esc(cur.title)}</strong><br>
+           <span class="muted">${esc(fmtDate(cur.createdAt))} に保存した検索結果です。料金・営業時間・写真は保存時点の情報です。</span></p>
+         <div class="banner-actions">
+           <button type="button" class="btn-ghost" data-bact="research">この条件で最新の情報を検索</button>
+           <button type="button" class="btn-ghost" data-bact="pin">${cur.pinned ? '★を外す' : '★保存'}</button>
+           <button type="button" class="btn-ghost" data-bact="history">履歴一覧</button>
+         </div>`
+      : `<p>条件と結果を履歴に保存しました：<strong>${cur.pinned ? '★ ' : ''}${esc(cur.title)}</strong></p>
+         <div class="banner-actions">
+           <button type="button" class="btn-ghost" data-bact="pin">${cur.pinned ? '★を外す' : '★保存'}</button>
+           <button type="button" class="btn-ghost" data-bact="rename">名前変更</button>
+         </div>`;
+  }
+
+  /** 保存時の写真URLが期限切れの場合は頭文字表示に切り替える */
+  function bindImageFallback() {
+    document.addEventListener('error', e => {
+      const img = e.target;
+      if (!(img instanceof HTMLImageElement)) return;
+      const media = img.closest('.venue-media');
+      if (media) {
+        const name = (img.closest('.venue').querySelector('.venue-name') || {}).textContent || '';
+        img.replaceWith(Object.assign(document.createElement('div'), { className: 'venue-noimg', textContent: name.slice(0, 1) }));
+      } else if (img.closest('.cmp, .gallery')) {
+        img.hidden = true;
+      }
+    }, true);
   }
 
   /* =========================================================
