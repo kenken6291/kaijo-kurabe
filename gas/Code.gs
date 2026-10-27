@@ -1,5 +1,5 @@
 /**
- * 会場くらべ（kaijo-kurabe） GAS バックエンド  v1.1.0
+ * 会場さがし（kaijo-kurabe） GAS バックエンド  v1.1.1
  * - doPost: JSON API（Content-Type: text/plain で受信 → CORSプリフライト回避）
  * - 認証: SHA-256 + salt + pepper（ストレッチング）、CacheService セッション
  * - 会場DB: スプレッドシート「Venues」シート
@@ -17,8 +17,8 @@
  *   GOOGLE_MAPS_API_KEY : Googleマップ検索用（Places API (New) を有効化したキー）
  */
 
-const APP_NAME = '会場くらべ';
-const APP_VERSION = 'v1.1.0';
+const APP_NAME = '会場さがし';
+const APP_VERSION = 'v1.1.1';
 const SESSION_TTL = 21600;          // 6時間（CacheService上限）
 const MAX_FAIL = 5;                 // ログイン失敗ロック回数
 const LOCK_MINUTES = 15;

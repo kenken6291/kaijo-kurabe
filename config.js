@@ -1,11 +1,11 @@
 /**
- * 会場くらべ 環境設定
+ * 会場さがし 環境設定
  * GAS_URL を空にしておくと、初回アクセス時に画面の「設定」から入力できます。
  * 画面で保存したURLは LocalStorage に保存され、ここの値より優先されます。
  */
 window.APP_CONFIG = {
-  APP_NAME: '会場くらべ',
-  VERSION: 'v1.1.0',
+  APP_NAME: '会場さがし',
+  VERSION: 'v1.1.1',
   GAS_URL: 'https://script.google.com/macros/s/AKfycbzZwBHsLsDFW39fCvXl4qJ63y97Bc85Ial_7pRDu_fZByUEbdoNOrAc6BEs_ECl8Hrs/exec',
   MAX_COMPARE: 4,
   KEYS: {

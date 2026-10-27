@@ -1,4 +1,4 @@
-# 会場くらべ（kaijo-kurabe） v1.1.0
+# 会場さがし（kaijo-kurabe） v1.1.1
 
 イベント主催者向けの会場検索・比較Webアプリ。
 GitHub Pages（フロント）＋ Google Apps Script / スプレッドシート / Google Drive（バックエンド）＋ Gemini API（条件抽出・雰囲気マッチ・TTS）。
