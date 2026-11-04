@@ -391,6 +391,68 @@
     .cmp .best { background: var(--accent); color: var(--accent-ink); padding: .05em .4em; border-radius: 3px; font-weight: 700; }
     .cmp video, .cmp .video-frame { max-width: 260px; }
 
+
+    /* ---------- 限定公開 ---------- */
+    .tabs { display: flex; gap: .3rem; border-bottom: 1px solid var(--line); margin: -.25rem 0 1rem; overflow-x: auto; }
+    .tabs [role="tab"] {
+      border: 0; background: none; cursor: pointer; padding: .55rem .9rem; min-height: 44px; white-space: nowrap;
+      border-bottom: 3px solid transparent; color: var(--muted); font-weight: 700;
+    }
+    .tabs [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+    #sharedBadge { color: var(--teal); }
+    .switch { display: inline-flex; align-items: center; gap: .45rem; cursor: pointer; position: relative; font-size: .85rem; font-weight: 700; user-select: none; }
+    .switch input { position: absolute; opacity: 0; width: 46px; height: 28px; margin: 0; cursor: pointer; }
+    .switch-ui { width: 46px; height: 28px; border-radius: 999px; background: var(--line); position: relative; flex: none; transition: background-color .2s; }
+    .switch-ui::after {
+      content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%;
+      background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .2s;
+    }
+    .switch input:checked + .switch-ui { background: var(--teal); }
+    .switch input:checked + .switch-ui::after { transform: translateX(18px); }
+    .switch input:focus-visible + .switch-ui { outline: 3px solid var(--accent); outline-offset: 2px; }
+    .switch input:disabled + .switch-ui { opacity: .5; }
+    .switch-text { min-width: 3.5em; color: var(--muted); }
+    .switch.is-on .switch-text { color: var(--teal); }
+    @media (prefers-reduced-motion: reduce) { .switch-ui, .switch-ui::after { transition: none; } }
+    .hist-share { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-top: .5rem; }
+    .hist-to { font-size: .82rem; display: inline-flex; flex-wrap: wrap; gap: .3rem; align-items: center; }
+    .hist-to > span:not(.muted) { background: color-mix(in srgb, var(--teal) 14%, transparent); color: var(--teal); border-radius: 4px; padding: 0 .45em; }
+    .hist-owner { margin: 0; font-size: .8rem; color: var(--teal); font-weight: 700; }
+    .pub-badge { font-size: .72rem; background: var(--teal); color: #fff; border-radius: 4px; padding: .05em .5em; vertical-align: middle; }
+    .saved-banner.is-shared { border-left-color: var(--teal); background: color-mix(in srgb, var(--teal) 8%, var(--surface)); }
+    .banner-from { font-size: .8rem; color: var(--teal); font-weight: 700; }
+
+    .contact-form { display: grid; grid-template-columns: 2fr 1.2fr 7em auto; gap: .5rem; align-items: end; }
+    .contact-form .field { margin: 0; }
+    @media (max-width: 640px) { .contact-form { grid-template-columns: 1fr 1fr; } .contact-form .field:first-child { grid-column: 1 / -1; } }
+    .c-group { font-size: .95rem; margin: 1.2rem 0 .3rem; }
+    .contact { display: flex; justify-content: space-between; gap: .8rem; flex-wrap: wrap; padding: .7rem 0; border-bottom: 1px solid var(--line); }
+    .contact.is-off .contact-main { opacity: .55; }
+    .contact-main { display: flex; flex-direction: column; min-width: 0; flex: 1 1 220px; }
+    .contact-mail { font-size: .8rem; overflow-wrap: anywhere; }
+    .contact-count { font-size: .8rem; color: var(--teal); }
+    .contact-actions { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+    .contact-actions select { min-height: 36px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); padding: 0 .4rem; }
+
+    .share-title { margin: 0 0 .8rem; font-weight: 700; }
+    .share-state { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; padding: .8rem; border: 1px solid var(--line); border-radius: var(--radius-s); }
+    .share-state p { margin: 0; font-size: .85rem; color: var(--muted); flex: 1 1 200px; }
+    .share-h { font-size: .95rem; margin: 1.2rem 0 .4rem; }
+    #shareGroups { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .5rem; }
+    #shareTargets { display: grid; gap: .3rem; max-height: 260px; overflow-y: auto; }
+    .target { display: flex; gap: .6rem; align-items: flex-start; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: var(--radius-s); cursor: pointer; }
+    .target input { width: 20px; height: 20px; margin-top: .2rem; flex: none; accent-color: var(--teal); }
+    .target.is-off { opacity: .6; }
+    .target-mail { font-size: .78rem; overflow-wrap: anywhere; }
+    .share-add { margin-top: .6rem; }
+    .share-add summary { cursor: pointer; color: var(--teal); font-size: .9rem; padding: .3rem 0; }
+    .share-add .contact-form { margin-top: .4rem; }
+    .share-notify { display: flex; gap: .5rem; align-items: center; font-size: .88rem; margin-top: .8rem; cursor: pointer; }
+    .share-notify input { width: 18px; height: 18px; accent-color: var(--teal); }
+    .send-row { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .btn-line { background: #06C755; color: #fff; }
+    .send-note { font-size: .8rem; color: var(--muted); margin: .5rem 0 0; }
+
     /* トースト */
     #toast { position: fixed; z-index: 100; top: calc(12px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); display: grid; gap: .5rem; width: min(480px, calc(100% - 24px)); }
     .toast-item { background: var(--ink); color: var(--bg); padding: .7rem 1rem; border-radius: var(--radius-s); font-size: .92rem; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
@@ -405,7 +467,7 @@
     </div>
     <div class="head-actions">
       <span class="user-chip"><span id="userName"></span> さん</span>
-      <button type="button" class="btn-ghost auth-only" id="historyBtn">検索履歴</button>
+      <button type="button" class="btn-ghost auth-only" id="historyBtn">履歴・共有</button>
       <button type="button" class="btn-ghost" id="helpBtn">使い方</button>
       <button type="button" class="btn-ghost auth-only" id="changePwBtn">パスワード変更</button>
       <button type="button" class="btn-ghost auth-only" id="logoutBtn">ログアウト</button>
@@ -531,7 +593,7 @@
   </div>
 
   <footer class="site-foot">
-    <span>会場さがし <span id="appVersion">v1.2.0</span></span>
+    <span>会場さがし <span id="appVersion">v1.3.0</span></span>
     <button type="button" class="btn-link" onclick="document.getElementById('termsModal').showModal()">利用規約・免責事項</button>
   </footer>
 
@@ -675,6 +737,7 @@
         <li><strong>気になる会場を集める</strong>カードの「比較」にチェックを入れると、画面下の比較リストに入ります（最大4件）。</li>
         <li><strong>並べて比べる</strong>「比較する」で、予算・収容人数・メニュー・写真・空撮映像を横並びで確認できます。いちばん安い予算と最大の収容人数には色が付きます。</li>
         <li><strong>あとで見返す</strong>検索した条件と結果は自動で「検索履歴」に残ります。開くと条件も結果も比較リストも当時のまま戻ります。残したい検索には★を付けてください。</li>
+        <li><strong>家族・友人だけに見せる</strong>「履歴・共有」の「公開相手」に相手のメールアドレスを登録し、見せたい検索の「公開・共有」で相手を選んで公開します（最初はすべて非公開）。「LINEで送る」でその場でリンクを送れます。相手はログインすると見られます。公開スイッチを切れば、すぐ見られなくなります。</li>
         <li><strong>音声ガイドを聞く</strong>「音声ガイド」で会場の特徴を読み上げます。移動中の確認にも便利です。</li>
       </ol>
       <p class="muted" style="font-size:.85rem">空き状況と最新の料金は、必ず会場へ直接確認してください。</p>
@@ -702,19 +765,107 @@
     </form>
   </dialog>
 
-  <!-- ===== 検索履歴 ===== -->
+  <!-- ===== 履歴・共有 ===== -->
   <dialog id="historyModal" class="wide" aria-labelledby="historyTitle">
     <div class="dlg-head">
-      <h2 id="historyTitle">検索履歴</h2>
+      <h2 id="historyTitle">履歴・共有</h2>
       <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
     </div>
     <div class="dlg-body">
-      <div class="hist-filter" role="group" aria-label="表示する履歴">
-        <button type="button" class="mood-chip" data-hfilter="all" aria-pressed="true">すべて</button>
-        <button type="button" class="mood-chip" data-hfilter="pinned" aria-pressed="false">★保存のみ</button>
+      <div class="tabs" role="tablist" aria-label="表示の切り替え">
+        <button type="button" role="tab" data-htab="mine" aria-selected="true">自分の検索</button>
+        <button type="button" role="tab" data-htab="shared" aria-selected="false">届いた検索<span id="sharedBadge"></span></button>
+        <button type="button" role="tab" data-htab="contacts" aria-selected="false">公開相手</button>
       </div>
-      <p class="muted hist-note">検索するたびに、条件と結果が自動で残ります。★を付けていない履歴は新しい順に50件まで保存されます。</p>
-      <div id="historyList"></div>
+
+      <section data-hpanel="mine">
+        <div class="hist-filter" role="group" aria-label="表示する履歴">
+          <button type="button" class="mood-chip" data-hfilter="all" aria-pressed="true">すべて</button>
+          <button type="button" class="mood-chip" data-hfilter="pinned" aria-pressed="false">★保存のみ</button>
+          <button type="button" class="mood-chip" data-hfilter="shared" aria-pressed="false">公開中のみ</button>
+        </div>
+        <p class="muted hist-note">検索するたびに、条件と結果が自動で残ります。★も公開もしていない履歴は新しい順に50件まで保存されます。「公開」スイッチで、選んだ相手への公開・非公開をすぐ切り替えられます（最初は非公開）。</p>
+        <div id="historyList"></div>
+      </section>
+
+      <section data-hpanel="shared" hidden>
+        <p class="muted hist-note">家族や友人があなたに公開した検索です。開くと条件・結果・比較リストを見られます（閲覧のみ）。</p>
+        <div id="sharedList"></div>
+      </section>
+
+      <section data-hpanel="contacts" hidden>
+        <p class="muted hist-note">検索結果を見せたい会員を登録します。相手は登録したメールアドレスでログインすると、あなたが公開した検索だけを見られます。スイッチを「停止」にすると、その人への公開をまとめて止められます。</p>
+        <form id="contactForm" class="contact-form" novalidate>
+          <div class="field">
+            <label for="cEmail">相手のメールアドレス</label>
+            <input id="cEmail" type="email" autocomplete="off" placeholder="taro@example.com" required>
+          </div>
+          <div class="field">
+            <label for="cName">表示名</label>
+            <input id="cName" type="text" maxlength="30" placeholder="母、太郎さん など">
+          </div>
+          <div class="field">
+            <label for="cGroup">グループ</label>
+            <select id="cGroup"><option>家族</option><option>友人</option><option>仕事</option><option>その他</option></select>
+          </div>
+          <button type="submit" class="btn" id="contactAddBtn">追加</button>
+        </form>
+        <p class="form-msg" id="contactMsg"></p>
+        <div id="contactList"></div>
+      </section>
+    </div>
+  </dialog>
+
+  <!-- ===== 公開・共有 ===== -->
+  <dialog id="shareModal" aria-labelledby="shareTitle">
+    <div class="dlg-head">
+      <h2 id="shareTitle">公開・共有</h2>
+      <button type="button" class="dlg-close" data-close aria-label="閉じる">×</button>
+    </div>
+    <div class="dlg-body">
+      <p class="share-title" id="shareItemTitle"></p>
+      <div class="share-state">
+        <label class="switch">
+          <input type="checkbox" role="switch" id="shareOn" aria-label="この検索を公開">
+          <span class="switch-ui" aria-hidden="true"></span>
+          <span class="switch-text" id="shareOnLabel">非公開</span>
+        </label>
+        <p id="shareStateNote"></p>
+      </div>
+
+      <h3 class="share-h">公開する相手</h3>
+      <div id="shareGroups" role="group" aria-label="まとめて選ぶ"></div>
+      <div id="shareTargets"></div>
+      <details class="share-add" id="shareAdd">
+        <summary>公開相手を追加</summary>
+        <div class="contact-form">
+          <div class="field">
+            <label for="shareAddEmail">メールアドレス</label>
+            <input id="shareAddEmail" type="email" autocomplete="off" placeholder="hanako@example.com">
+          </div>
+          <div class="field">
+            <label for="shareAddName">表示名</label>
+            <input id="shareAddName" type="text" maxlength="30" placeholder="妹 など">
+          </div>
+          <div class="field">
+            <label for="shareAddGroup">グループ</label>
+            <select id="shareAddGroup"><option>家族</option><option>友人</option><option>仕事</option><option>その他</option></select>
+          </div>
+          <button type="button" class="btn-ghost" id="shareAddBtn">追加</button>
+        </div>
+      </details>
+      <label class="share-notify"><input type="checkbox" id="shareNotify">新しく選んだ相手にメールでも知らせる</label>
+      <p class="form-msg" id="shareMsg"></p>
+      <button type="button" class="btn" id="shareSave" style="width:100%">保存</button>
+
+      <h3 class="share-h">その場で送る</h3>
+      <div class="send-row">
+        <button type="button" class="btn btn-line" id="shareLine">LINEで送る</button>
+        <button type="button" class="btn-ghost" id="shareCopy">リンクをコピー</button>
+        <button type="button" class="btn-ghost" id="shareNative" hidden>ほかのアプリで送る</button>
+        <button type="button" class="btn-ghost" id="shareMail">メールで送る</button>
+      </div>
+      <p class="send-note">送ったリンクは、公開した相手がログインしたときだけ開けます。ほかの人に転送されても見られません。非公開のときは、送る前に公開するか確認します。</p>
     </div>
   </dialog>
 

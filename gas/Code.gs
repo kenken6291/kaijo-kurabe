@@ -1,10 +1,11 @@
 /**
- * 会場さがし（kaijo-kurabe） GAS バックエンド  v1.2.0
+ * 会場さがし（kaijo-kurabe） GAS バックエンド  v1.3.0
  * - doPost: JSON API（Content-Type: text/plain で受信 → CORSプリフライト回避）
  * - 認証: SHA-256 + salt + pepper（ストレッチング）、CacheService セッション
  * - 会場DB: スプレッドシート「Venues」シート
  * - AI: Gemini（条件抽出 / 雰囲気マッチ / TTS）
  * - Googleマップ: Places API (New) Text Search / Place Photos
+ * - 限定公開: 検索履歴を指定した会員（家族・友人など）にだけ公開（既定は非公開）
  *
  * スクリプトプロパティ（setup() で一部自動作成）
  *   GEMINI_API_KEY   : 必須（手動で設定）
@@ -19,7 +20,7 @@
  */
 
 const APP_NAME = '会場さがし';
-const APP_VERSION = 'v1.2.0';
+const APP_VERSION = 'v1.3.0';
 const SESSION_TTL = 21600;          // 6時間（CacheService上限）
 const MAX_FAIL = 5;                 // ログイン失敗ロック回数
 const LOCK_MINUTES = 15;
@@ -58,6 +59,11 @@ function doPost(e) {
       getSaved: (u) => getSaved_(u, req),
       updateSaved: (u) => updateSaved_(u, req),
       deleteSaved: (u) => deleteSaved_(u, req),
+      setShare: (u) => setShare_(u, req),
+      listShared: (u) => listShared_(u),
+      listContacts: (u) => listContacts_(u),
+      saveContact: (u) => saveContact_(u, req),
+      deleteContact: (u) => deleteContact_(u, req),
       tts: () => tts_(req),
       placePhotos: () => placePhotos_(req),
     };
@@ -767,7 +773,8 @@ function driveId_(s) {
  *   Drive「kaijo-kurabe_saved」：結果本体（JSON）
  *   ★保存（pinned）していない履歴は、1人あたり最新 SAVED_KEEP 件まで残す
  * ========================================================= */
-const SAVED_HEADERS = ['id', 'email', 'createdAt', 'title', 'criteria', 'source', 'relaxed', 'count', 'pinned', 'picked', 'fileId', 'summary', 'updatedAt'];
+const SAVED_HEADERS = ['id', 'email', 'createdAt', 'title', 'criteria', 'source', 'relaxed', 'count', 'pinned', 'picked', 'fileId', 'summary', 'updatedAt',
+  'shareOn', 'shareTo', 'sharedAt'];
 const SAVED_KEEP = 50;
 
 function savedSheet_() {
@@ -777,6 +784,9 @@ function savedSheet_() {
     sh = ss.insertSheet('Saved');
     sh.appendRow(SAVED_HEADERS);
     sh.setFrozenRows(1);
+  } else if (sh.getLastColumn() < SAVED_HEADERS.length) {
+    // v1.2 以前のシートに共有用の列見出しを追加
+    sh.getRange(1, 1, 1, SAVED_HEADERS.length).setValues([SAVED_HEADERS]);
   }
   return sh;
 }
@@ -820,7 +830,8 @@ function saveSearch_(user, criteria, result) {
   lock.waitLock(10000);
   try {
     savedSheet_().appendRow([id, user.email, now, savedTitle_(criteria, result.source), JSON.stringify(criteria || {}),
-      result.source, result.relaxed === true, result.venues.length, false, '[]', file.getId(), JSON.stringify(summary), now]);
+      result.source, result.relaxed === true, result.venues.length, false, '[]', file.getId(), JSON.stringify(summary), now,
+      false, '[]', '']);
     trimSaved_(user.email);
   } finally {
     lock.releaseLock();
@@ -828,13 +839,14 @@ function saveSearch_(user, criteria, result) {
   return { id: id, title: savedTitle_(criteria, result.source), createdAt: now.toISOString() };
 }
 
-/** ★なしの古い履歴を削除 */
+/** ★なし・非公開の古い履歴を削除（公開中の履歴はリンクが切れないよう残す） */
 function trimSaved_(email) {
   const sh = savedSheet_();
   const values = sh.getDataRange().getValues();
   const rows = [];
+  const SHARE_COL = SAVED_HEADERS.indexOf('shareOn');
   for (let i = 1; i < values.length; i++) {
-    if (values[i][1] === email && !isTrue_(values[i][8])) rows.push({ row: i + 1, time: new Date(values[i][2]).getTime(), fileId: values[i][10] });
+    if (values[i][1] === email && !isTrue_(values[i][8]) && !isTrue_(values[i][SHARE_COL])) rows.push({ row: i + 1, time: new Date(values[i][2]).getTime(), fileId: values[i][10] });
   }
   if (rows.length <= SAVED_KEEP) return;
   rows.sort((a, b) => b.time - a.time);
@@ -844,18 +856,25 @@ function trimSaved_(email) {
   });
 }
 
-function findSaved_(email, id) {
-  const sh = savedSheet_();
-  const values = sh.getDataRange().getValues();
+/** 履歴の行を探す（権限チェックなし） */
+function findSavedRow_(id) {
+  const values = savedSheet_().getDataRange().getValues();
   for (let i = 1; i < values.length; i++) {
     if (values[i][0] === id) {
-      if (values[i][1] !== email) throw apiError_('この履歴を表示する権限がありません。');
       const o = {};
       SAVED_HEADERS.forEach((h, j) => { o[h] = values[i][j]; });
       return { row: i + 1, item: o };
     }
   }
-  throw apiError_('履歴が見つかりません。削除された可能性があります。');
+  return null;
+}
+
+/** 自分の履歴だけを返す（編集・削除用） */
+function findSaved_(email, id) {
+  const found = findSavedRow_(id);
+  if (!found) throw apiError_('履歴が見つかりません。削除された可能性があります。');
+  if (found.item.email !== email) throw apiError_('この履歴を変更する権限がありません。');
+  return found;
 }
 
 function savedToClient_(o) {
@@ -871,6 +890,9 @@ function savedToClient_(o) {
     count: Number(o.count) || 0,
     pinned: isTrue_(o.pinned),
     picked: parse(o.picked, []),
+    shareOn: isTrue_(o.shareOn),
+    shareTo: parse(o.shareTo, []),
+    sharedAt: o.sharedAt ? new Date(o.sharedAt).toISOString() : '',
   };
 }
 
@@ -888,12 +910,18 @@ function listSaved_(user) {
 }
 
 function getSaved_(user, req) {
-  const found = findSaved_(user.email, String(req.id || ''));
+  const found = findSavedRow_(String(req.id || ''));
+  const denied = 'この検索は見つからないか、あなたには公開されていません。持ち主に公開設定を確認してもらってください。';
+  if (!found) throw apiError_(denied, 'NO_ACCESS');
+  const mine = found.item.email === user.email;
+  if (!mine && !canView_(found.item, user.email)) throw apiError_(denied, 'NO_ACCESS');
   let body = { venues: [], summary: {} };
   try { body = JSON.parse(DriveApp.getFileById(found.item.fileId).getBlob().getDataAsString('UTF-8')); } catch (e) {
     throw apiError_('保存された結果データを読み込めませんでした。');
   }
-  return { item: savedToClient_(found.item), venues: body.venues || [], summary: body.summary || {} };
+  let item = savedToClient_(found.item);
+  if (!mine) item = sharedView_(item, found.item.email);
+  return { item: item, venues: body.venues || [], summary: body.summary || {}, mine: mine };
 }
 
 function updateSaved_(user, req) {
@@ -919,6 +947,198 @@ function deleteSaved_(user, req) {
 }
 
 function isTrue_(v) { return v === true || String(v).toUpperCase() === 'TRUE'; }
+
+/* =========================================================
+ * 限定公開（指定した会員だけに検索履歴を見せる）
+ *   シート「Contacts」：持ち主ごとの公開相手（家族・友人など）
+ *   Saved シートの shareOn / shareTo：履歴ごとの公開ON/OFFと公開先
+ *   閲覧できる条件：shareOn が TRUE ＋ shareTo に自分 ＋ 持ち主の公開相手リストで「有効」
+ * ========================================================= */
+const CONTACT_HEADERS = ['owner', 'email', 'name', 'group', 'active', 'createdAt', 'updatedAt'];
+const CONTACT_GROUPS = ['家族', '友人', '仕事', 'その他'];
+const MAX_CONTACTS = 50;
+
+function contactsSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('Contacts');
+  if (!sh) {
+    sh = ss.insertSheet('Contacts');
+    sh.appendRow(CONTACT_HEADERS);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function readContacts_(owner) {
+  const values = contactsSheet_().getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < values.length; i++) {
+    if (owner && values[i][0] !== owner) continue;
+    const o = { row: i + 1 };
+    CONTACT_HEADERS.forEach((h, j) => { o[h] = values[i][j]; });
+    o.active = isTrue_(o.active);
+    out.push(o);
+  }
+  return out;
+}
+
+function contactToClient_(c) {
+  return { email: c.email, name: String(c.name || ''), group: String(c.group || 'その他'), active: c.active };
+}
+
+function listContacts_(user) {
+  const list = readContacts_(user.email).map(contactToClient_);
+  const order = g => { const i = CONTACT_GROUPS.indexOf(g); return i < 0 ? 99 : i; };
+  list.sort((a, b) => order(a.group) - order(b.group) || a.name.localeCompare(b.name, 'ja'));
+  return { contacts: list, groups: CONTACT_GROUPS };
+}
+
+/** 公開相手の追加・更新（メール・表示名・グループ・有効/停止） */
+function saveContact_(user, req) {
+  const email = normEmail_(req.email);
+  if (!isEmail_(email)) throw apiError_('メールアドレスの形式が正しくありません。');
+  if (email === user.email) throw apiError_('自分自身は公開相手に登録できません。');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const sh = contactsSheet_();
+    const mine = readContacts_(user.email);
+    const cur = mine.filter(c => c.email === email)[0];
+    const name = typeof req.name === 'string' ? req.name.trim().slice(0, 30) : null;
+    const group = CONTACT_GROUPS.indexOf(req.group) >= 0 ? req.group : null;
+    const now = new Date();
+    if (cur) {
+      const set = (k, v) => sh.getRange(cur.row, CONTACT_HEADERS.indexOf(k) + 1).setValue(v);
+      if (name !== null) set('name', name || email.split('@')[0]);
+      if (group) set('group', group);
+      if (typeof req.active === 'boolean') set('active', req.active);
+      set('updatedAt', now);
+    } else {
+      if (mine.length >= MAX_CONTACTS) throw apiError_('公開相手は' + MAX_CONTACTS + '人まで登録できます。');
+      sh.appendRow([user.email, email, name || email.split('@')[0], group || 'その他',
+        typeof req.active === 'boolean' ? req.active : true, now, now]);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return listContacts_(user);
+}
+
+/** 公開相手の削除（その人への公開もすべて取り消す） */
+function deleteContact_(user, req) {
+  const email = normEmail_(req.email);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const cur = readContacts_(user.email).filter(c => c.email === email)[0];
+    if (!cur) throw apiError_('公開相手が見つかりません。');
+    contactsSheet_().deleteRow(cur.row);
+    // 自分の履歴の公開先からも外す
+    const sh = savedSheet_();
+    const values = sh.getDataRange().getValues();
+    const TO = SAVED_HEADERS.indexOf('shareTo');
+    for (let i = 1; i < values.length; i++) {
+      if (values[i][1] !== user.email) continue;
+      let to = [];
+      try { to = JSON.parse(values[i][TO] || '[]'); } catch (e) { to = []; }
+      if (to.indexOf(email) >= 0) sh.getRange(i + 1, TO + 1).setValue(JSON.stringify(to.filter(x => x !== email)));
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return listContacts_(user);
+}
+
+/** 閲覧権限の判定 */
+function canView_(item, viewerEmail, contacts) {
+  if (!isTrue_(item.shareOn)) return false;
+  let to = [];
+  try { to = JSON.parse(item.shareTo || '[]'); } catch (e) { return false; }
+  if (to.indexOf(viewerEmail) < 0) return false;
+  const list = contacts || readContacts_(item.email);
+  return list.some(c => c.owner === item.email && c.email === viewerEmail && c.active);
+}
+
+/** 受け取った側に見せる形（公開先の一覧など持ち主の設定は渡さない） */
+function sharedView_(item, ownerEmail) {
+  const owner = findUserRow_(sheet_('Users'), ownerEmail);
+  return Object.assign({}, item, {
+    shareTo: [], shareOn: true, pinned: false,
+    ownerName: owner ? String(owner.user.name || '') : '会員',
+    shared: true,
+  });
+}
+
+/** 公開ON/OFF・公開先の変更。notify=true で新しく追加した相手にメールで知らせる */
+function setShare_(user, req) {
+  const found = findSaved_(user.email, String(req.id || ''));
+  const sh = savedSheet_();
+  const set = (k, v) => sh.getRange(found.row, SAVED_HEADERS.indexOf(k) + 1).setValue(v);
+  const contacts = readContacts_(user.email);
+  const valid = contacts.map(c => c.email);
+  let before = [];
+  try { before = JSON.parse(found.item.shareTo || '[]'); } catch (e) { before = []; }
+  let to = before.filter(e => valid.indexOf(e) >= 0);
+  if (Array.isArray(req.shareTo)) {
+    to = req.shareTo.map(normEmail_).filter((e, i, a) => valid.indexOf(e) >= 0 && a.indexOf(e) === i).slice(0, MAX_CONTACTS);
+  }
+  const on = typeof req.shareOn === 'boolean' ? req.shareOn : isTrue_(found.item.shareOn);
+  if (on && !to.length) throw apiError_('公開する相手を1人以上選んでください。', 'NO_TARGET');
+  set('shareTo', JSON.stringify(to));
+  set('shareOn', on);
+  if (on && !isTrue_(found.item.shareOn)) set('sharedAt', new Date());
+  set('updatedAt', new Date());
+
+  let mailed = 0;
+  if (on && req.notify === true) {
+    const wasOn = isTrue_(found.item.shareOn);
+    const targets = to.filter(e => !wasOn || before.indexOf(e) < 0);
+    const link = shareLink_(found.item.id);
+    targets.slice(0, 20).forEach(e => {
+      const c = contacts.filter(x => x.email === e)[0];
+      if (!c || !c.active) return;
+      try {
+        sendMail_(e, '【' + APP_NAME + '】' + user.name + ' さんから会場の検索結果が届きました',
+          (c.name || '') + ' 様\n\n' + user.name + ' さんが、会場さがしの検索結果をあなたに公開しました。\n\n' +
+          '「' + found.item.title + '」\n' + (link ? link + '\n' : '') +
+          '\n会場さがしにログインすると見られます。会員登録がまだの方は、このメールアドレスで登録してください。\n');
+        mailed++;
+      } catch (err) { /* 送信上限などは無視して続行 */ }
+    });
+  }
+  const item = savedToClient_(findSavedRow_(found.item.id).item);
+  return { item: item, mailed: mailed };
+}
+
+function shareLink_(id) {
+  const url = prop_('APP_URL');
+  return url ? url.replace(/[?#].*$/, '') + '?s=' + encodeURIComponent(id) : '';
+}
+
+/** 自分に公開されている検索の一覧 */
+function listShared_(user) {
+  const values = savedSheet_().getDataRange().getValues();
+  const contacts = readContacts_(null).filter(c => c.email === user.email && c.active);
+  const owners = {};
+  contacts.forEach(c => { owners[c.owner] = true; });
+  const names = {};
+  const items = [];
+  for (let i = 1; i < values.length; i++) {
+    const o = {};
+    SAVED_HEADERS.forEach((h, j) => { o[h] = values[i][j]; });
+    if (!owners[o.email] || o.email === user.email) continue;
+    if (!canView_(o, user.email, contacts)) continue;
+    if (!(o.email in names)) {
+      const f = findUserRow_(sheet_('Users'), o.email);
+      names[o.email] = f && f.user.status === 'active' ? String(f.user.name || '') : null;
+    }
+    if (names[o.email] === null) continue; // 利用停止中の会員の公開は出さない
+    const item = savedToClient_(o);
+    items.push(Object.assign(item, { shareTo: [], ownerName: names[o.email], shared: true, pinned: false }));
+  }
+  items.sort((a, b) => ((b.sharedAt || b.createdAt) > (a.sharedAt || a.createdAt) ? 1 : -1));
+  return { items: items };
+}
 
 /* =========================================================
  * Gemini TTS 音声ガイド

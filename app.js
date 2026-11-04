@@ -5,6 +5,7 @@
  * - 検索（登録会場＋Googleマップ）・並べ替え・カード表示・比較表・詳細（写真/Earth Studio映像）
  * - Gemini TTS 音声ガイド（PCM → WAV 変換して再生）
  * - 検索履歴（条件＋結果を自動保存、★保存・名前変更・削除、再表示・再検索）
+ * - 限定公開（指定した会員だけに公開・一覧でON/OFF・公開相手の管理・LINE等で送る）
  */
 (() => {
   const $ = (s, el = document) => el.querySelector(s);
@@ -23,7 +24,16 @@
     currentSaved: null,   // 表示中の結果に対応する履歴 { id, title, createdAt, pinned }
     viewingSaved: false,  // 履歴から開いた結果を表示中か
     history: [],
+    historyLoaded: false,
     historyFilter: 'all',
+    historyTab: 'mine',
+    shared: [],
+    sharedLoaded: false,
+    contacts: [],
+    contactsLoaded: false,
+    shareId: null,
+    shareDirty: false,
+    pendingOpen: null,    // 共有リンク（?s=ID）で開く予定の検索
     pickTimer: null,
     audioCache: new Map(),
     photoCache: new Map(),
@@ -46,13 +56,19 @@
     bindHistory();
     bindImageFallback();
 
+    state.pendingOpen = readShareParam();
     if (!Config.getGasUrl()) openSettings(true);
-    Auth.init();
+    Auth.init().then(() => {
+      if (state.pendingOpen && !Auth.user && Config.getGasUrl()) {
+        Auth.open('login', '共有された検索結果を見るには、ログインしてください。会員登録がまだの方は、リンクを受け取ったメールアドレスで登録してください。');
+      }
+    });
   });
 
   document.addEventListener('auth:ready', () => {
     let seen = null;
     try { seen = localStorage.getItem(APP_CONFIG.KEYS.TUTORIAL_SEEN); } catch (e) { /* noop */ }
+    if (state.pendingOpen) { openPendingLink(); return; }
     if (!seen) $('#tutorialModal').showModal();
   });
 
@@ -63,6 +79,11 @@
     state.currentSaved = null;
     state.viewingSaved = false;
     state.history = [];
+    state.historyLoaded = false;
+    state.shared = [];
+    state.sharedLoaded = false;
+    state.contacts = [];
+    state.contactsLoaded = false;
     $('#mapsNotice').hidden = true;
     renderSavedBanner();
     state.selected.clear();
@@ -233,7 +254,7 @@
       state.lastResult = r;
       state.viewingSaved = false;
       state.currentSaved = r.saved ? Object.assign({ pinned: false }, r.saved) : null;
-      state.history = []; // 次に履歴を開いたとき再取得
+      state.historyLoaded = false; // 次に履歴を開いたとき再取得
       state.selected.forEach(id => { if (!state.venues.some(v => v.id === id)) state.selected.delete(id); });
       $('#resultSummary').textContent = summaryText(r, state.venues.length);
       renderMapsNotice(r);
@@ -674,7 +695,10 @@
   }
 
   /* =========================================================
-   * 検索履歴
+   * 検索履歴・限定公開
+   *   自分の検索：★保存・名前変更・削除・公開スイッチ
+   *   届いた検索：自分に公開された検索（閲覧のみ）
+   *   公開相手 ：家族・友人などを登録（有効/停止・グループ）
    * ========================================================= */
   const fmtDate = iso => {
     const d = new Date(iso);
@@ -694,14 +718,20 @@
     return out;
   }
 
+  const GROUPS = ['家族', '友人', '仕事', 'その他'];
+
   function bindHistory() {
-    $('#historyBtn').addEventListener('click', openHistory);
+    $('#historyBtn').addEventListener('click', () => openHistory('mine'));
+
+    $$('#historyModal [data-htab]').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.htab)));
+
     $$('#historyModal [data-hfilter]').forEach(b => b.addEventListener('click', () => {
       state.historyFilter = b.dataset.hfilter;
       $$('#historyModal [data-hfilter]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
       renderHistory();
     }));
-    $('#historyList').addEventListener('click', async e => {
+
+    $('#historyList').addEventListener('click', e => {
       const btn = e.target.closest('[data-hact]');
       if (!btn) return;
       const id = btn.closest('[data-hid]').dataset.hid;
@@ -710,51 +740,151 @@
       if (act === 'pin') togglePin(id);
       if (act === 'rename') renameSaved(id);
       if (act === 'delete') deleteSaved(id);
+      if (act === 'share') openShare(id);
     });
+    $('#historyList').addEventListener('change', e => {
+      if (e.target.matches('[data-hswitch]')) quickToggleShare(e.target.closest('[data-hid]').dataset.hid, e.target);
+    });
+
+    $('#sharedList').addEventListener('click', e => {
+      const btn = e.target.closest('[data-sact="open"]');
+      if (btn) openSaved(btn.closest('[data-hid]').dataset.hid);
+    });
+
     $('#savedBanner').addEventListener('click', e => {
       const b = e.target.closest('[data-bact]');
       if (!b || !state.currentSaved) return;
-      if (b.dataset.bact === 'pin') togglePin(state.currentSaved.id);
-      if (b.dataset.bact === 'rename') renameSaved(state.currentSaved.id);
-      if (b.dataset.bact === 'research') runSearch(state.lastResult && state.lastResult.relaxed);
-      if (b.dataset.bact === 'history') openHistory();
+      const act = b.dataset.bact;
+      if (act === 'pin') togglePin(state.currentSaved.id);
+      if (act === 'rename') renameSaved(state.currentSaved.id);
+      if (act === 'research') runSearch(state.lastResult && state.lastResult.relaxed);
+      if (act === 'history') openHistory('mine');
+      if (act === 'sharedlist') openHistory('shared');
+      if (act === 'share') openShare(state.currentSaved.id);
     });
+
+    bindContacts();
+    bindShareModal();
   }
 
-  async function openHistory() {
+  function switchTab(tab) {
+    state.historyTab = tab;
+    $$('#historyModal [data-htab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.htab === tab)));
+    $$('#historyModal [data-hpanel]').forEach(p => { p.hidden = p.dataset.hpanel !== tab; });
+    if (tab === 'mine') renderHistory();
+    if (tab === 'shared') loadShared().then(renderShared);
+    if (tab === 'contacts') loadContacts().then(renderContacts);
+  }
+
+  async function openHistory(tab) {
     if (!Auth.user) { Auth.open('login'); return; }
     $('#historyModal').showModal();
-    if (state.history.length) { renderHistory(); return; }
+    // 公開相手の名前を表示するため、先に読み込む
+    await Promise.all([loadHistory(), loadContacts()]);
+    switchTab(tab || state.historyTab || 'mine');
+  }
+
+  async function loadHistory(force) {
+    if (state.historyLoaded && !force) return;
     $('#historyList').innerHTML = '<p class="muted">読み込んでいます…</p>';
     try {
       const r = await Api.call('listSaved');
       state.history = r.items || [];
-      renderHistory();
+      state.historyLoaded = true;
     } catch (err) {
       $('#historyList').innerHTML = `<p class="form-msg is-error">${esc(err.message)}</p>`;
     }
   }
 
+  async function loadShared(force) {
+    if (state.sharedLoaded && !force) return;
+    $('#sharedList').innerHTML = '<p class="muted">読み込んでいます…</p>';
+    try {
+      const r = await Api.call('listShared');
+      state.shared = r.items || [];
+      state.sharedLoaded = true;
+    } catch (err) {
+      $('#sharedList').innerHTML = `<p class="form-msg is-error">${esc(err.message)}</p>`;
+    }
+  }
+
+  async function loadContacts(force) {
+    if (state.contactsLoaded && !force) return;
+    try {
+      const r = await Api.call('listContacts');
+      state.contacts = r.contacts || [];
+      state.contactsLoaded = true;
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  const contactName = email => {
+    const c = state.contacts.find(x => x.email === email);
+    return c ? c.name : email;
+  };
+
+  function switchHtml(on, attr, label) {
+    return `<label class="switch ${on ? 'is-on' : ''}">
+        <input type="checkbox" role="switch" ${attr} ${on ? 'checked' : ''} aria-label="${esc(label)}">
+        <span class="switch-ui" aria-hidden="true"></span>
+        <span class="switch-text">${on ? '公開中' : '非公開'}</span>
+      </label>`;
+  }
+
   function renderHistory() {
-    const list = state.history.filter(h => state.historyFilter === 'all' || h.pinned);
+    const f = state.historyFilter;
+    const list = state.history.filter(h => f === 'all' || (f === 'pinned' && h.pinned) || (f === 'shared' && h.shareOn));
     if (!list.length) {
-      $('#historyList').innerHTML = `<p class="muted">${state.historyFilter === 'pinned'
-        ? '★を付けた検索はまだありません。残しておきたい検索に★を付けると、ここにまとまります。'
+      $('#historyList').innerHTML = `<p class="muted">${
+        f === 'pinned' ? '★を付けた検索はまだありません。残しておきたい検索に★を付けると、ここにまとまります。'
+        : f === 'shared' ? '公開中の検索はありません。見せたい検索の「公開」スイッチを入れると、ここにまとまります。'
         : 'まだ検索履歴がありません。検索すると、条件と結果がここに自動で残ります。'}</p>`;
       return;
     }
-    $('#historyList').innerHTML = list.map(h => `
+    $('#historyList').innerHTML = list.map(h => {
+      const to = (h.shareTo || []).map(contactName);
+      return `
       <article class="hist ${state.currentSaved && state.currentSaved.id === h.id ? 'is-current' : ''}" data-hid="${esc(h.id)}">
         <div class="hist-main">
           <h3>${h.pinned ? '<span class="hist-star" aria-label="★保存済み">★</span>' : ''}${esc(h.title)}</h3>
           <p class="hist-meta">${esc(fmtDate(h.createdAt))}　${h.count}件${h.picked && h.picked.length ? `　比較リスト ${h.picked.length}件` : ''}${h.relaxed ? '　条件ゆるめ' : ''}</p>
           <p class="hist-chips">${criteriaChips(h.criteria).map(c => `<span>${esc(c)}</span>`).join('')}</p>
+          <div class="hist-share">
+            ${switchHtml(!!h.shareOn, 'data-hswitch', `「${h.title}」を公開`)}
+            <span class="hist-to">${to.length
+              ? `${h.shareOn ? '' : '<span class="muted">（停止中）</span>'}公開先：${to.map(n => `<span>${esc(n)}</span>`).join('')}`
+              : '<span class="muted">公開先は未設定</span>'}</span>
+          </div>
         </div>
         <div class="hist-actions">
           <button type="button" class="btn" data-hact="open">開く</button>
+          <button type="button" class="btn-ghost" data-hact="share">公開・共有</button>
           <button type="button" class="btn-ghost" data-hact="pin" aria-pressed="${h.pinned}">${h.pinned ? '★を外す' : '★保存'}</button>
           <button type="button" class="btn-ghost" data-hact="rename">名前変更</button>
           <button type="button" class="btn-ghost hist-del" data-hact="delete">削除</button>
+        </div>
+      </article>`;
+    }).join('');
+  }
+
+  function renderShared() {
+    const n = state.shared.length;
+    $('#sharedBadge').textContent = n ? ` ${n}` : '';
+    if (!n) {
+      $('#sharedList').innerHTML = '<p class="muted">まだ届いた検索はありません。家族や友人があなたのメールアドレスを公開相手に登録し、検索を公開すると、ここに表示されます。</p>';
+      return;
+    }
+    $('#sharedList').innerHTML = state.shared.map(h => `
+      <article class="hist ${state.currentSaved && state.currentSaved.id === h.id ? 'is-current' : ''}" data-hid="${esc(h.id)}">
+        <div class="hist-main">
+          <p class="hist-owner">${esc(h.ownerName)} さんから</p>
+          <h3>${esc(h.title)}</h3>
+          <p class="hist-meta">${esc(fmtDate(h.sharedAt || h.createdAt))} 公開　${h.count}件${h.picked && h.picked.length ? `　比較リスト ${h.picked.length}件` : ''}</p>
+          <p class="hist-chips">${criteriaChips(h.criteria).map(c => `<span>${esc(c)}</span>`).join('')}</p>
+        </div>
+        <div class="hist-actions">
+          <button type="button" class="btn" data-sact="open">開く</button>
         </div>
       </article>`).join('');
   }
@@ -776,7 +906,7 @@
   }
 
   async function openSaved(id) {
-    const btn = $(`#historyList [data-hid="${CSS.escape(id)}"] [data-hact="open"]`);
+    const btn = $(`#historyModal [data-hid="${CSS.escape(id)}"] .btn`);
     if (btn) { btn.disabled = true; btn.textContent = '開いています…'; }
     try {
       const r = await Api.call('getSaved', { id });
@@ -793,25 +923,37 @@
       renderMapsNotice(r.summary);
       renderSavedBanner();
       renderResults();
-      $('#historyModal').close();
+      if ($('#historyModal').open) $('#historyModal').close();
       $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return true;
     } catch (err) {
-      toast(err.message, 'error');
+      if (err.code !== 'AUTH') toast(err.message, 'error');
+      return false;
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '開く'; }
     }
   }
 
+  /** 履歴・表示中の結果の両方に最新の状態を反映 */
+  function applyItem(item) {
+    const i = state.history.findIndex(h => h.id === item.id);
+    if (i >= 0) state.history[i] = item;
+    if (state.currentSaved && state.currentSaved.id === item.id) state.currentSaved = Object.assign({}, state.currentSaved, item);
+  }
+
+  function findOwnItem(id) {
+    return state.history.find(h => h.id === id)
+      || (state.currentSaved && state.currentSaved.id === id && !state.currentSaved.shared ? state.currentSaved : null);
+  }
+
   async function updateSaved(id, patch) {
     const r = await Api.call('updateSaved', Object.assign({ id }, patch));
-    const i = state.history.findIndex(h => h.id === id);
-    if (i >= 0) state.history[i] = r.item;
-    if (state.currentSaved && state.currentSaved.id === id) state.currentSaved = Object.assign({}, state.currentSaved, r.item);
+    applyItem(r.item);
     return r.item;
   }
 
   async function togglePin(id) {
-    const cur = state.history.find(h => h.id === id) || (state.currentSaved && state.currentSaved.id === id ? state.currentSaved : null);
+    const cur = findOwnItem(id);
     const next = !(cur && cur.pinned);
     try {
       await updateSaved(id, { pinned: next });
@@ -822,7 +964,7 @@
   }
 
   async function renameSaved(id) {
-    const cur = state.history.find(h => h.id === id) || state.currentSaved;
+    const cur = findOwnItem(id);
     const title = window.prompt('この検索の名前', cur ? cur.title : '');
     if (title == null) return;
     try {
@@ -835,7 +977,8 @@
 
   async function deleteSaved(id) {
     const cur = state.history.find(h => h.id === id);
-    if (!window.confirm(`「${cur ? cur.title : 'この検索'}」を履歴から削除しますか？`)) return;
+    const msg = `「${cur ? cur.title : 'この検索'}」を履歴から削除しますか？` + (cur && cur.shareOn ? '\n公開中のため、相手も見られなくなります。' : '');
+    if (!window.confirm(msg)) return;
     try {
       await Api.call('deleteSaved', { id });
       state.history = state.history.filter(h => h.id !== id);
@@ -845,9 +988,33 @@
     } catch (err) { toast(err.message, 'error'); }
   }
 
-  /** 比較リストの選択を履歴に保存（連続操作はまとめて送信） */
+  /** 一覧のスイッチで公開・非公開を切り替え（公開先が未設定なら設定画面へ） */
+  async function quickToggleShare(id, input) {
+    const item = findOwnItem(id);
+    const on = input.checked;
+    if (on && !(item && item.shareTo && item.shareTo.length)) {
+      input.checked = false;
+      openShare(id, '公開する相手を選んでから「保存」を押してください。');
+      return;
+    }
+    input.disabled = true;
+    try {
+      const r = await Api.call('setShare', { id, shareOn: on });
+      applyItem(r.item);
+      toast(on ? '公開しました。選んだ相手だけが見られます。' : '非公開にしました。');
+    } catch (err) {
+      input.checked = !on;
+      toast(err.message, 'error');
+    } finally {
+      input.disabled = false;
+      renderHistory();
+      renderSavedBanner();
+    }
+  }
+
+  /** 比較リストの選択を履歴に保存（連続操作はまとめて送信。届いた検索は保存しない） */
   function schedulePickedSync() {
-    if (!state.currentSaved) return;
+    if (!state.currentSaved || state.currentSaved.shared) return;
     clearTimeout(state.pickTimer);
     const id = state.currentSaved.id;
     state.pickTimer = setTimeout(() => {
@@ -860,20 +1027,329 @@
     const cur = state.currentSaved;
     if (!cur) { box.hidden = true; return; }
     box.hidden = false;
-    box.classList.toggle('is-old', state.viewingSaved);
+    box.classList.toggle('is-old', state.viewingSaved && !cur.shared);
+    box.classList.toggle('is-shared', !!cur.shared);
+    const shareBtn = `<button type="button" class="btn-ghost" data-bact="share">${cur.shareOn ? '公開中・共有' : '公開・共有'}</button>`;
+    if (cur.shared) {
+      box.innerHTML = `
+        <p><span class="banner-from">${esc(cur.ownerName)} さんが公開した検索</span><br><strong>${esc(cur.title)}</strong><br>
+          <span class="muted">${esc(fmtDate(cur.createdAt))} 時点の情報です（閲覧のみ。比較リストの変更は保存されません）。</span></p>
+        <div class="banner-actions">
+          <button type="button" class="btn-ghost" data-bact="research">この条件で自分も検索</button>
+          <button type="button" class="btn-ghost" data-bact="sharedlist">届いた検索</button>
+        </div>`;
+      return;
+    }
     box.innerHTML = state.viewingSaved
-      ? `<p><strong>${cur.pinned ? '★ ' : ''}${esc(cur.title)}</strong><br>
+      ? `<p><strong>${cur.pinned ? '★ ' : ''}${esc(cur.title)}</strong>${cur.shareOn ? ' <span class="pub-badge">公開中</span>' : ''}<br>
            <span class="muted">${esc(fmtDate(cur.createdAt))} に保存した検索結果です。料金・営業時間・写真は保存時点の情報です。</span></p>
          <div class="banner-actions">
+           ${shareBtn}
            <button type="button" class="btn-ghost" data-bact="research">この条件で最新の情報を検索</button>
            <button type="button" class="btn-ghost" data-bact="pin">${cur.pinned ? '★を外す' : '★保存'}</button>
            <button type="button" class="btn-ghost" data-bact="history">履歴一覧</button>
          </div>`
-      : `<p>条件と結果を履歴に保存しました：<strong>${cur.pinned ? '★ ' : ''}${esc(cur.title)}</strong></p>
+      : `<p>条件と結果を履歴に保存しました：<strong>${cur.pinned ? '★ ' : ''}${esc(cur.title)}</strong>${cur.shareOn ? ' <span class="pub-badge">公開中</span>' : ''}</p>
          <div class="banner-actions">
+           ${shareBtn}
            <button type="button" class="btn-ghost" data-bact="pin">${cur.pinned ? '★を外す' : '★保存'}</button>
            <button type="button" class="btn-ghost" data-bact="rename">名前変更</button>
          </div>`;
+  }
+
+  /* ---------------- 公開相手 ---------------- */
+  function bindContacts() {
+    $('#contactForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const btn = $('#contactAddBtn');
+      const ok = await addContact($('#cEmail').value, $('#cName').value, $('#cGroup').value, btn, '#contactMsg');
+      if (ok) { $('#contactForm').reset(); renderContacts(); }
+    });
+    $('#contactList').addEventListener('change', async e => {
+      const row = e.target.closest('[data-cemail]');
+      if (!row) return;
+      const email = row.dataset.cemail;
+      if (e.target.matches('[data-cswitch]')) {
+        const on = e.target.checked;
+        await saveContactPatch(email, { active: on }, on ? '公開を再開しました。' : 'この人への公開をすべて止めました。');
+      }
+      if (e.target.matches('[data-cgroup]')) await saveContactPatch(email, { group: e.target.value }, 'グループを変更しました。');
+    });
+    $('#contactList').addEventListener('click', async e => {
+      const row = e.target.closest('[data-cemail]');
+      if (!row) return;
+      const email = row.dataset.cemail;
+      if (e.target.closest('[data-cact="rename"]')) {
+        const c = state.contacts.find(x => x.email === email);
+        const name = window.prompt('表示名（例：母、太郎さん）', c ? c.name : '');
+        if (name == null) return;
+        await saveContactPatch(email, { name }, '表示名を変更しました。');
+      }
+      if (e.target.closest('[data-cact="delete"]')) {
+        if (!window.confirm(`${contactName(email)}（${email}）を公開相手から外しますか？\nこの人への公開もすべて取り消されます。`)) return;
+        try {
+          const r = await Api.call('deleteContact', { email });
+          state.contacts = r.contacts || [];
+          state.history.forEach(h => { if (h.shareTo) h.shareTo = h.shareTo.filter(x => x !== email); });
+          renderContacts();
+          toast('公開相手から外しました。');
+        } catch (err) { toast(err.message, 'error'); }
+      }
+    });
+  }
+
+  async function addContact(email, name, group, btn, msgSel) {
+    email = String(email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setFormMsg(msgSel, '相手のメールアドレスを正しく入力してください。'); return false; }
+    if (Auth.user && email === String(Auth.user.email).toLowerCase()) { setFormMsg(msgSel, '自分自身は登録できません。'); return false; }
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '追加中…';
+    try {
+      const r = await Api.call('saveContact', { email, name: String(name || '').trim(), group, active: true });
+      state.contacts = r.contacts || [];
+      state.contactsLoaded = true;
+      setFormMsg(msgSel, `${contactName(email)} さんを追加しました。`, 'ok');
+      return true;
+    } catch (err) {
+      setFormMsg(msgSel, err.message);
+      return false;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  async function saveContactPatch(email, patch, okMsg) {
+    try {
+      const r = await Api.call('saveContact', Object.assign({ email }, patch));
+      state.contacts = r.contacts || [];
+      toast(okMsg);
+    } catch (err) { toast(err.message, 'error'); }
+    renderContacts();
+  }
+
+  function renderContacts() {
+    const box = $('#contactList');
+    if (!state.contacts.length) {
+      box.innerHTML = '<p class="muted">まだ公開相手はいません。上の欄から、家族や友人のメールアドレスを追加してください。</p>';
+      return;
+    }
+    const countFor = email => state.history.filter(h => h.shareOn && (h.shareTo || []).includes(email)).length;
+    box.innerHTML = GROUPS.map(g => {
+      const list = state.contacts.filter(c => (GROUPS.includes(c.group) ? c.group : 'その他') === g);
+      if (!list.length) return '';
+      return `<h3 class="c-group">${esc(g)}<span class="muted">（${list.length}人）</span></h3>` + list.map(c => `
+        <div class="contact ${c.active ? '' : 'is-off'}" data-cemail="${esc(c.email)}">
+          <div class="contact-main">
+            <strong>${esc(c.name)}</strong>
+            <span class="muted contact-mail">${esc(c.email)}</span>
+            <span class="contact-count">公開中 ${countFor(c.email)}件</span>
+          </div>
+          <div class="contact-actions">
+            <label class="switch ${c.active ? 'is-on' : ''}">
+              <input type="checkbox" role="switch" data-cswitch ${c.active ? 'checked' : ''} aria-label="${esc(c.name)}への公開">
+              <span class="switch-ui" aria-hidden="true"></span>
+              <span class="switch-text">${c.active ? '有効' : '停止'}</span>
+            </label>
+            <select data-cgroup aria-label="${esc(c.name)}のグループ">${GROUPS.map(x => `<option ${x === c.group ? 'selected' : ''}>${x}</option>`).join('')}</select>
+            <button type="button" class="btn-ghost" data-cact="rename">表示名</button>
+            <button type="button" class="btn-ghost hist-del" data-cact="delete">外す</button>
+          </div>
+        </div>`).join('');
+    }).join('');
+  }
+
+  /* ---------------- 公開・共有ダイアログ ---------------- */
+  function bindShareModal() {
+    const dlg = $('#shareModal');
+    $('#shareOn').addEventListener('change', () => { markShareDirty(); syncShareSwitch(); });
+    $('#shareTargets').addEventListener('change', e => { if (e.target.matches('input')) markShareDirty(); });
+    $('#shareGroups').addEventListener('click', e => {
+      const b = e.target.closest('[data-sgroup]');
+      if (!b) return;
+      const g = b.dataset.sgroup;
+      const boxes = $$('#shareTargets input').filter(i => g === 'all' || i.dataset.group === g).filter(i => !i.disabled);
+      const allOn = boxes.length && boxes.every(i => i.checked);
+      boxes.forEach(i => { i.checked = !allOn; });
+      markShareDirty();
+    });
+    $('#shareAddBtn').addEventListener('click', async () => {
+      const email = $('#shareAddEmail').value;
+      const ok = await addContact(email, $('#shareAddName').value, $('#shareAddGroup').value, $('#shareAddBtn'), '#shareMsg');
+      if (!ok) return;
+      const keep = checkedTargets();
+      keep.push(email.trim().toLowerCase());
+      renderShareTargets(keep);
+      markShareDirty();
+      $('#shareAddEmail').value = '';
+      $('#shareAddName').value = '';
+    });
+    $('#shareSave').addEventListener('click', () => saveShare(false));
+    $('#shareLine').addEventListener('click', () => sendShare('line'));
+    $('#shareCopy').addEventListener('click', () => sendShare('copy'));
+    $('#shareNative').addEventListener('click', () => sendShare('native'));
+    $('#shareMail').addEventListener('click', () => sendShare('mail'));
+    $('#shareNative').hidden = !navigator.share;
+    dlg.addEventListener('close', () => { renderHistory(); renderSavedBanner(); renderContacts(); });
+  }
+
+  async function openShare(id, msg) {
+    const item = findOwnItem(id);
+    if (!item) { toast('この検索は公開設定できません。', 'error'); return; }
+    state.shareId = id;
+    state.shareDirty = false;
+    $('#shareItemTitle').textContent = item.title;
+    $('#shareOn').checked = !!item.shareOn;
+    $('#shareNotify').checked = false;
+    setFormMsg('#shareMsg', msg || '', 'info');
+    syncShareSwitch();
+    $('#shareTargets').innerHTML = '<p class="muted">読み込んでいます…</p>';
+    $('#shareModal').showModal();
+    await loadContacts();
+    renderShareTargets(item.shareTo || []);
+  }
+
+  function renderShareTargets(checked) {
+    const box = $('#shareTargets');
+    const groupsUsed = GROUPS.filter(g => state.contacts.some(c => c.group === g));
+    $('#shareGroups').innerHTML = state.contacts.length
+      ? `<button type="button" class="mood-chip" data-sgroup="all">全員</button>` +
+        groupsUsed.map(g => `<button type="button" class="mood-chip" data-sgroup="${esc(g)}">${esc(g)}を全員</button>`).join('')
+      : '';
+    if (!state.contacts.length) {
+      box.innerHTML = '<p class="muted">公開相手がまだいません。下の「公開相手を追加」から登録してください。</p>';
+      $('#shareAdd').open = true;
+      return;
+    }
+    box.innerHTML = state.contacts.map(c => `
+      <label class="target ${c.active ? '' : 'is-off'}">
+        <input type="checkbox" value="${esc(c.email)}" data-group="${esc(c.group)}" ${checked.includes(c.email) ? 'checked' : ''}>
+        <span><strong>${esc(c.name)}</strong> <span class="muted">${esc(c.group)}${c.active ? '' : '・停止中'}</span><br>
+          <span class="muted target-mail">${esc(c.email)}</span></span>
+      </label>`).join('');
+  }
+
+  const checkedTargets = () => $$('#shareTargets input:checked').map(i => i.value);
+
+  function markShareDirty() { state.shareDirty = true; }
+
+  function syncShareSwitch() {
+    const on = $('#shareOn').checked;
+    $('#shareOnLabel').closest('.switch').classList.toggle('is-on', on);
+    $('#shareOnLabel').textContent = on ? '公開中' : '非公開';
+    $('#shareStateNote').textContent = on
+      ? 'チェックを入れた相手だけが、ログインしてこの検索を見られます。'
+      : '非公開です。あなた以外は見られません。';
+  }
+
+  /** 保存。forceOn=true のときは公開ONにして保存（送信前の自動公開） */
+  async function saveShare(forceOn) {
+    if (forceOn) { $('#shareOn').checked = true; syncShareSwitch(); }
+    const id = state.shareId;
+    const btn = $('#shareSave');
+    btn.disabled = true;
+    try {
+      const r = await Api.call('setShare', {
+        id, shareOn: $('#shareOn').checked, shareTo: checkedTargets(), notify: $('#shareNotify').checked,
+      });
+      applyItem(r.item);
+      state.shareDirty = false;
+      $('#shareNotify').checked = false;
+      const n = (r.item.shareTo || []).length;
+      setFormMsg('#shareMsg', r.item.shareOn
+        ? `保存しました。${n}人に公開中です。` + (r.mailed ? `（${r.mailed}人にメールで知らせました）` : '')
+        : '保存しました。非公開です。', 'ok');
+      return r.item;
+    } catch (err) {
+      if (forceOn) { $('#shareOn').checked = false; syncShareSwitch(); }
+      setFormMsg('#shareMsg', err.message);
+      return null;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function shareUrl(id) {
+    return location.origin + location.pathname + '?s=' + encodeURIComponent(id);
+  }
+
+  function shareText(item) {
+    const who = Auth.user ? Auth.user.name : '';
+    return `【${APP_CONFIG.APP_NAME}】${who} さんが会場の検索結果「${item.title}」を公開しました。\n` +
+      'ログインして開いてください（会員登録がまだの方は、このメッセージを受け取ったメールアドレスで登録してから開いてください）。';
+  }
+
+  const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  /** その場で送る：未公開・未保存なら先に公開して保存してから送る */
+  async function sendShare(kind) {
+    const item = findOwnItem(state.shareId);
+    if (!item) return;
+    const needOn = !$('#shareOn').checked;
+    if (needOn && !window.confirm('非公開のままでは、リンクを受け取った相手も開けません。\nチェックした相手に公開して送りますか？')) return;
+    if (!checkedTargets().length) { setFormMsg('#shareMsg', '公開する相手を1人以上選んでください。'); return; }
+
+    // ポップアップブロック対策：クリック直後に窓だけ開いておく（LINE・PC）
+    let win = null;
+    if (kind === 'line' && !isMobile()) win = window.open('', '_blank');
+
+    let cur = item;
+    if (needOn || state.shareDirty || !item.shareOn) {
+      cur = await saveShare(true);
+      if (!cur) { if (win) win.close(); return; }
+    }
+    const url = shareUrl(cur.id);
+    const text = shareText(cur);
+
+    if (kind === 'line') {
+      const lineUrl = isMobile()
+        ? 'https://line.me/R/share?text=' + encodeURIComponent(text + '\n' + url)
+        : 'https://social-plugins.line.me/lineit/share?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(text);
+      if (win) win.location.href = lineUrl; else location.href = lineUrl;
+    }
+    if (kind === 'copy') {
+      const all = text + '\n' + url;
+      try {
+        await navigator.clipboard.writeText(all);
+        toast('リンクをコピーしました。LINEやメッセージに貼り付けて送ってください。');
+      } catch (e) {
+        window.prompt('このリンクをコピーして送ってください', url);
+      }
+    }
+    if (kind === 'native') {
+      try { await navigator.share({ title: cur.title, text, url }); } catch (e) { /* キャンセル */ }
+    }
+    if (kind === 'mail') {
+      const to = (cur.shareTo || []).join(',');
+      location.href = `mailto:${to}?subject=${encodeURIComponent(`【${APP_CONFIG.APP_NAME}】${cur.title}`)}&body=${encodeURIComponent(text + '\n' + url)}`;
+    }
+  }
+
+  /* ---------------- 共有リンク（?s=ID）から開く ---------------- */
+  function readShareParam() {
+    const id = new URLSearchParams(location.search).get('s');
+    return id && /^S\d{14,20}$/.test(id) ? id : null;
+  }
+
+  function clearShareParam() {
+    try {
+      const u = new URL(location.href);
+      u.searchParams.delete('s');
+      history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+    } catch (e) { /* noop */ }
+  }
+
+  async function openPendingLink() {
+    const id = state.pendingOpen;
+    if (!id) return;
+    state.pendingOpen = null;
+    clearShareParam();
+    const ok = await openSaved(id);
+    if (ok && state.currentSaved && state.currentSaved.shared) {
+      toast(`${state.currentSaved.ownerName} さんが公開した検索を開きました。`);
+      state.sharedLoaded = false;
+    }
   }
 
   /** 保存時の写真URLが期限切れの場合は頭文字表示に切り替える */
