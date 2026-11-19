@@ -1,4 +1,4 @@
-# 会場さがし（kaijo-kurabe） v1.3.0
+# 会場さがし（kaijo-kurabe） v1.4.0
 
 イベント主催者向けの会場検索・比較Webアプリ。
 GitHub Pages（フロント）＋ Google Apps Script / スプレッドシート / Google Drive（バックエンド）＋ Gemini API（条件抽出・雰囲気マッチ・TTS）。
@@ -32,8 +32,8 @@ kaijo-kurabe/
 |---|---|
 | `GEMINI_API_KEY` | Google AI Studio で発行したAPIキー（必須） |
 | `APP_URL` | `https://kenken6291.github.io/kaijo-kurabe/`（メール本文に記載） |
-| `GEMINI_MODEL` | 既定 `gemini-2.5-flash`（新しいモデルに変えるときはここだけ変更） |
-| `TTS_MODEL` | 既定 `gemini-2.5-flash-preview-tts` |
+| `GEMINI_MODEL` | 任意。画面で「自動モード」を選んだ時のモデル。未設定なら汎用の最新モデル（`gemini-flash-latest` → `gemini-4-hydrogen` → `gemini-3.8-flash` の順に試す） |
+| `TTS_MODEL` | 任意。未設定なら `gemini-3.8-flash-tts` → `gemini-2.5-flash-preview-tts` の順に試す |
 | `TTS_VOICE` | 既定 `Kore`（Puck、Aoede など変更可） |
 
    `PEPPER` は運用開始後に変更しないでください（全員ログインできなくなります）。
@@ -141,3 +141,10 @@ kaijo-kurabe/
 - 音声入力は Chrome / Edge / Android Chrome 推奨（Safari は一部制限あり）。沈黙でブラウザが認識を止めても、「止める」を押すまで自動で再開します。
 - ログインは5回連続失敗で15分ロック。セッションは最終操作から6時間有効。
 - Gemini APIキーはGAS側だけに保存し、フロントには出しません。
+
+
+## Geminiモデルの選択 v1.4.0
+- 条件入力欄の下の「AIモデル」で、条件の読み取り・雰囲気マッチに使うモデルを選べます（端末ごとに保存）。
+- 選択肢は `config.js` の `GEMINI_MODEL_OPTIONS` で管理します。
+- 選んだモデルが使えない（廃止・未公開・名前違い）時は、GAS側で汎用の最新モデルへ自動で切り替わり、画面に「使用モデル」が表示されます。
+- GASエディタで `testGeminiModels` を実行すると、各モデル（読み上げモデル含む）が使えるか ○／× で確認できます。

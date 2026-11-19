@@ -48,6 +48,7 @@
     $('#appVersion').textContent = APP_CONFIG.VERSION;
     document.title = APP_CONFIG.APP_NAME;
     bindSettings();
+    bindModelPicker();
     bindTutorial();
     bindSearch();
     bindVoice();
@@ -248,6 +249,7 @@
     try {
       const source = ($('input[name="source"]:checked') || {}).value || 'both';
       const r = await Api.call('search', { criteria: readCriteria(), relaxed: relaxed === true, source });
+      showUsedModel(r);
       state.venues = r.venues || [];
       state.perPerson = r.perPerson;
       state.searched = true;
@@ -379,6 +381,7 @@
     btn.textContent = 'AIが読み取り中…';
     try {
       const r = await Api.call('extract', { text });
+      showUsedModel(r);
       const filled = applyCriteria(r.criteria || {});
       toast(filled.length ? `${filled.join('・')}を反映しました。内容を確認して検索してください。` : '条件を読み取れませんでした。言い方を変えてお試しください。');
     } catch (err) {
@@ -387,6 +390,54 @@
       btn.disabled = false;
       btn.textContent = '条件に反映';
     }
+  }
+
+  /* =========================================================
+   * AIモデル選択
+   * ========================================================= */
+  function bindModelPicker() {
+    const sel = $('#modelSelect');
+    if (!sel) return;
+    sel.innerHTML = '';
+    (APP_CONFIG.GEMINI_MODEL_OPTIONS || []).forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.appendChild(opt);
+    });
+    sel.value = Config.getModel();
+    sel.addEventListener('change', () => {
+      Config.setModel(sel.value);
+      $('#modelUsed').hidden = true;
+      renderVersionModel();
+      toast('AIモデルを「' + Config.modelLabel(sel.value) + '」にしました。');
+    });
+    renderVersionModel();
+    if (Config.getGasUrl()) {
+      Api.call('ping').then(r => {
+        state.defaultModel = r.defaultModel || '';
+        renderVersionModel();
+      }).catch(() => { /* noop */ });
+    }
+  }
+
+  function renderVersionModel(used) {
+    const el = $('#verModel');
+    if (!el) return;
+    if (used) { el.textContent = used; return; }
+    const m = Config.getModel();
+    el.textContent = m ? m : (state.defaultModel ? '自動（' + state.defaultModel + '）' : '自動');
+  }
+
+  /** GASの応答に含まれる「実際に使ったモデル」を表示（切替が起きた時は理由も） */
+  function showUsedModel(r) {
+    const el = $('#modelUsed');
+    if (!el || !r || !r.model) return;
+    el.textContent = r.fallback
+      ? '使用モデル：' + r.model + '（' + (r.requestedModel || '指定モデル') + ' が使えなかったため自動で切替）'
+      : '使用モデル：' + r.model;
+    el.hidden = false;
+    renderVersionModel(r.model);
   }
 
   /* =========================================================

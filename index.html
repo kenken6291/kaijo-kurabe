@@ -157,6 +157,8 @@
       border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface);
       transition: background-color .6s;
     }
+    .model-field { margin: .8rem 0 0; }
+    .model-field .model-note, .model-field .model-used { font-size: .78rem; margin: .3rem 0 0; }
     .field input.is-filled, .field select.is-filled { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
     .row-budget { display: grid; grid-template-columns: 1fr 8.5em; gap: .6rem; }
@@ -492,6 +494,12 @@
         <textarea id="voiceText" placeholder="ここに話した内容が入ります。直接書いてもOKです。"></textarea>
         <p id="voiceInterim" aria-live="polite"></p>
         <p id="voiceHint">例：「来月の第2金曜、夜7時から30人くらい。川崎駅の近くで、ひとり5千円以内。落ち着いた雰囲気で音響があるところ」</p>
+        <div class="field model-field">
+          <label for="modelSelect">AIモデル</label>
+          <select id="modelSelect"></select>
+          <p class="model-note muted">選んだモデルが使えない時は、汎用の最新モデルに自動で切り替わります</p>
+          <p class="model-used muted" id="modelUsed" hidden></p>
+        </div>
       </div>
 
       <form id="searchForm" novalidate>
@@ -593,7 +601,7 @@
   </div>
 
   <footer class="site-foot">
-    <span>会場さがし <span id="appVersion">v1.3.0</span></span>
+    <span>会場さがし <span id="appVersion">v1.4.0</span> ／ AIモデル <span id="verModel">-</span></span>
     <button type="button" class="btn-link" onclick="document.getElementById('termsModal').showModal()">利用規約・免責事項</button>
   </footer>
 

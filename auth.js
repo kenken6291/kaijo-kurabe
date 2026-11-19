@@ -23,7 +23,7 @@
         res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ action, token: Auth.token(), ...data }),
+          body: JSON.stringify({ action, token: Auth.token(), model: Config.getModel(), ...data }),
           redirect: 'follow',
         });
       } catch (e) {
